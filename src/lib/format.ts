@@ -86,4 +86,5 @@ export const PAYMENT_LABELS: Record<string, string> = {
   CASH: "Cash",
   BANK: "Bank / mobile money",
   CREDIT: "On credit",
+  OPENING: "Opening stock",
 };

@@ -37,8 +37,21 @@ await db.exec(`
   create publication supabase_realtime;
 `);
 
+// Shop rows written under the old schema, to check the bar migration carries
+// them over the way it will on a live database.
+const BAR_MIGRATION = "20261004000100_shop_to_bar.sql";
+let LEGACY_ITEM;
+async function writeLegacyShopRows() {
+  LEGACY_ITEM = (await db.query(`insert into shop_inventory (item_name, sku, category, quantity_in_stock, cost_price, selling_price, reorder_threshold)
+    values ('Engine oil 1L', 'OIL-1L', 'Lubricants', 24, 20, 30, 5) returning id`)).rows[0].id;
+  await db.query(`insert into shop_sales (item_id, quantity, sale_date) values ($1, 4, '2026-09-15')`, [LEGACY_ITEM]);
+  await db.query(`insert into financial_transactions (transaction_date, category, amount, transaction_type)
+    values ('2026-09-15', 'Shop Supplier Payment', 300, 'EXPENSE')`);
+}
+
 for (const file of fs.readdirSync(MIGRATIONS).sort()) {
   try {
+    if (file === BAR_MIGRATION) await writeLegacyShopRows();
     await db.exec(fs.readFileSync(path.join(MIGRATIONS, file), "utf8"));
     console.log("applied " + file);
   } catch (e) {
@@ -72,6 +85,23 @@ const OWNER = "00000000-0000-0000-0000-00000000000a";
 const MANAGER = "00000000-0000-0000-0000-00000000000b";
 const ATTENDANT = "00000000-0000-0000-0000-00000000000c";
 const PENDING = "00000000-0000-0000-0000-00000000000d";
+
+console.log("\n== shop → bar migration");
+const legacyItem = await one(`select quantity_in_stock from bar_inventory where id = $1`, [LEGACY_ITEM]);
+check("existing items carry over to bar_inventory", legacyItem?.quantity_in_stock === 20, legacyItem);
+const legacySale = await one(`select je.source_type from bar_sales s join journal_entries je on je.id = s.journal_entry_id where s.item_id = $1`, [LEGACY_ITEM]);
+check("existing sales keep their postings, now typed BAR_SALE", legacySale?.source_type === "BAR_SALE", legacySale);
+const legacyTx = await one(`select category from financial_transactions where amount = 300`);
+check("cash-book entries follow the renamed supplier category", legacyTx?.category === "Bar Supplier Payment", legacyTx);
+const barAccounts = (await q(`select name from accounts where code in ('1210', '4010', '5010') order by code`)).map((a) => a.name);
+check("bar accounts renamed", barAccounts.join("|") === "Bar Inventory|Bar Sales|Cost of Bar Sales", barAccounts);
+const leftovers = await q(`
+  select relname as name from pg_class where relnamespace = 'public'::regnamespace and relname like '%shop%'
+  union all select conname from pg_constraint where connamespace = 'public'::regnamespace and conname like '%shop%'
+  union all select policyname from pg_policies where schemaname = 'public' and policyname like '%shop%'
+  union all select tgname from pg_trigger where not tgisinternal and tgname like '%shop%'
+  union all select proname from pg_proc where pronamespace = 'public'::regnamespace and (proname like '%shop%' or prosrc ilike '%shop%')`);
+check("nothing in the schema still refers to the shop", leftovers.length === 0, leftovers);
 
 console.log("\n== profiles & roles");
 await q(`insert into auth.users (id, email, raw_user_meta_data) values
@@ -207,20 +237,29 @@ await expectError("closing dips must be recorded in date order", () =>
 const openWs = await as(MANAGER, () => one(`select opening_stock, opening_source from v_wetstock_daily where tank_id = $1 and day = '2026-10-02'`, [T1]));
 check("next day opening falls back to previous closing dip", num(openWs.opening_stock) === 9050 && openWs.opening_source === "PREVIOUS_CLOSING_DIP", openWs);
 
-console.log("\n== shop");
-const ITEM = (await as(MANAGER, () => one(`insert into shop_inventory (item_name, sku, quantity_in_stock, cost_price, selling_price, reorder_threshold)
-  values ('Engine Oil 1L', 'OIL-1L', 20, 50, 75, 5) returning id`))).id;
-await as(ATTENDANT, () => q(`insert into shop_sales (item_id, quantity, unit_price, sale_date) values ($1, 3, 1, $2)`, [ITEM, D1]));
-let item = await one(`select quantity_in_stock from shop_inventory where id = $1`, [ITEM]);
-const sale = await one(`select unit_price, total_amount, recorded_by from shop_sales`);
-check("sale at shelf price 75, stock 17", num(sale.unit_price) === 75 && num(sale.total_amount) === 225 && item.quantity_in_stock === 17 && sale.recorded_by === ATTENDANT, { sale, item });
+console.log("\n== bar");
+const ITEM = (await as(MANAGER, () => one(`insert into bar_inventory (item_name, sku, quantity_in_stock, cost_price, selling_price, reorder_threshold)
+  values ('Star beer, 60 cl', 'BEER-STAR-60CL', 20, 50, 75, 5) returning id`))).id;
+await as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity, unit_price, sale_date) values ($1, 3, 1, $2)`, [ITEM, D1]));
+let item = await one(`select quantity_in_stock from bar_inventory where id = $1`, [ITEM]);
+const sale = await one(`select unit_price, total_amount, recorded_by from bar_sales where item_id = $1`, [ITEM]);
+check("sale at menu price 75, stock 17", num(sale.unit_price) === 75 && num(sale.total_amount) === 225 && item.quantity_in_stock === 17 && sale.recorded_by === ATTENDANT, { sale, item });
 await expectError("cannot oversell", () =>
-  as(ATTENDANT, () => q(`insert into shop_sales (item_id, quantity) values ($1, 50)`, [ITEM])), /left in stock/);
-await as(MANAGER, () => q(`insert into shop_restocks (item_id, quantity, unit_cost, restock_date) values ($1, 10, 56, $2)`, [ITEM, D1]));
-item = await one(`select quantity_in_stock, cost_price from shop_inventory where id = $1`, [ITEM]);
+  as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity) values ($1, 50)`, [ITEM])), /left in stock/);
+await as(MANAGER, () => q(`insert into bar_restocks (item_id, quantity, unit_cost, restock_date) values ($1, 10, 56, $2)`, [ITEM, D1]));
+item = await one(`select quantity_in_stock, cost_price from bar_inventory where id = $1`, [ITEM]);
 check("restock WAC = (17*50 + 560)/27 = 52.2222", item.quantity_in_stock === 27 && num(item.cost_price) === 52.2222, item);
 await expectError("manager cannot edit stock qty directly", () =>
-  as(MANAGER, () => q(`update shop_inventory set quantity_in_stock = 1 where id = $1`, [ITEM])), /permission denied/);
+  as(MANAGER, () => q(`update bar_inventory set quantity_in_stock = 1 where id = $1`, [ITEM])), /permission denied/);
+const MALT = (await as(MANAGER, () => one(`insert into bar_inventory (item_name, sku, category, quantity_in_stock, cost_price, selling_price)
+  values ('Maltina, 33 cl', 'MALTINA-33-CL', 'Malt drinks', 0, 0, 25) returning id`))).id;
+await as(MANAGER, () => q(`insert into bar_restocks (item_id, quantity, unit_cost, payment_method, restock_date) values ($1, 24, 16, 'OPENING', $2)`, [MALT, D1]));
+const malt = await one(`select quantity_in_stock, cost_price from bar_inventory where id = $1`, [MALT]);
+const maltLines = await q(`select account_code, debit, credit from v_ledger where description = 'Opening bar stock — 24 × Maltina, 33 cl' order by account_code`);
+check("opening count: 24 at cost 16, Dr Bar Inventory / Cr Owner's Equity 384 (no cash or payable)",
+  malt.quantity_in_stock === 24 && num(malt.cost_price) === 16 && maltLines.length === 2 &&
+  maltLines[0].account_code === "1210" && num(maltLines[0].debit) === 384 && maltLines[1].account_code === "3000" && num(maltLines[1].credit) === 384,
+  { malt, maltLines });
 
 console.log("\n== cash book");
 const TX = (await as(MANAGER, () => one(`insert into financial_transactions (transaction_date, category, amount, transaction_type, description)
@@ -249,7 +288,7 @@ console.log("\n== profit engine");
 const pnl = await as(MANAGER, () => q(`select * from get_profit_and_loss('2026-10-01', '2026-10-01')`));
 const g = (grp) => pnl.filter((r) => r.report_group === grp).reduce((a, r) => a + num(r.amount), 0);
 const revenue = g("REVENUE"), cogs = g("COGS"), opex = g("OPEX"), other = g("OTHER_INCOME");
-check("revenue 39800 fuel + 225 shop = 40025", revenue === 40025, pnl);
+check("revenue 39800 fuel + 225 bar = 40025", revenue === 40025, pnl);
 check("COGS 33300 + 150 + 1250 loss = 34700", cogs === 34700, pnl);
 check("gross profit 5325, net = 5325 - (6000 + 800) = -1475", revenue - cogs === 5325 && revenue - cogs - opex + other === -1475, { revenue, cogs, opex, other });
 
@@ -271,9 +310,10 @@ const trend = await as(MANAGER, () => q(`select * from get_daily_trend('2026-09-
 check("trend has 3 days with gaps filled", trend.length === 3 && num(trend[0].fuel_sales) === 0 && num(trend[1].fuel_sales) === 39800, trend);
 
 console.log("\n== reversals");
-await as(MANAGER, () => q(`delete from shop_sales`));
-check("deleting a sale restores stock and its journal entry", (await one(`select quantity_in_stock from shop_inventory where id = $1`, [ITEM])).quantity_in_stock === 30 &&
-  (await one(`select count(*)::int c from journal_entries where source_type = 'SHOP_SALE'`)).c === 0);
+await as(MANAGER, () => q(`delete from bar_sales`));
+check("deleting a sale restores stock and its journal entry", (await one(`select quantity_in_stock from bar_inventory where id = $1`, [ITEM])).quantity_in_stock === 30 &&
+  (await one(`select count(*)::int c from journal_entries where source_type = 'BAR_SALE'`)).c === 0);
+check("…including sales made before the bar migration", (await one(`select quantity_in_stock from bar_inventory where id = $1`, [LEGACY_ITEM])).quantity_in_stock === 24);
 await expectError("readings of a reconciled shift cannot be deleted", () =>
   as(MANAGER, () => q(`delete from pump_readings where shift_id = $1 and pump_number = 'P1' and reading_date = '2026-10-01'`, [S1])), /locked|closing dip/);
 await as(MANAGER, () => q(`delete from pump_readings where shift_id = $1`, [S3]));

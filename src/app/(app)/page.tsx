@@ -21,10 +21,10 @@ import {
   todayISO,
 } from "@/lib/format";
 import type {
+  BarStock,
   DashboardKpis,
   Profile,
   ShiftSummary,
-  ShopStock,
   StationSettings,
   TankStatus,
   TrendRow,
@@ -36,8 +36,8 @@ const LIVE_TABLES = [
   "pump_readings",
   "tank_dips",
   "fuel_deliveries",
-  "shop_sales",
-  "shop_inventory",
+  "bar_sales",
+  "bar_inventory",
   "financial_transactions",
 ] as const;
 
@@ -56,7 +56,7 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
     supabase.from("v_shift_summary").select("*").eq("shift_date", date).order("opened_at"),
     supabase.rpc("get_daily_trend", { p_from: addDaysISO(date, -13), p_to: date }),
     supabase
-      .from("v_shop_stock")
+      .from("v_bar_stock")
       .select("*")
       .eq("is_active", true)
       .neq("stock_status", "OK")
@@ -68,12 +68,12 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
   const tanks = rows<TankStatus>(tanksResult, "tanks");
   const shifts = rows<ShiftSummary>(shiftsResult, "shifts");
   const trend = rows<TrendRow>(trendResult, "sales trend");
-  const lowStock = rows<ShopStock>(lowStockResult, "shop stock");
+  const lowStock = rows<BarStock>(lowStockResult, "bar stock");
 
   const handover = k.handover;
   const tolerance = Number(settings.shortage_tolerance);
   const isToday = date === todayISO();
-  const trendTotal = trend.reduce((sum, d) => sum + Number(d.fuel_sales) + Number(d.shop_sales), 0);
+  const trendTotal = trend.reduce((sum, d) => sum + Number(d.fuel_sales) + Number(d.bar_sales), 0);
 
   return (
     <>
@@ -173,7 +173,7 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
           <Card
             className="lg:col-span-2"
             title="Sales, last 14 days"
-            description={`Fuel and shop sales per day · ${formatMoney(trendTotal, currency)} in total`}
+            description={`Fuel and bar sales per day · ${formatMoney(trendTotal, currency)} in total`}
           >
             <BarChart
               title="Daily sales, last 14 days"
@@ -182,7 +182,7 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
                 key: d.day,
                 axisLabel: String(Number(d.day.slice(8, 10))),
                 label: formatDate(d.day),
-                value: Number(d.fuel_sales) + Number(d.shop_sales),
+                value: Number(d.fuel_sales) + Number(d.bar_sales),
               }))}
             />
           </Card>
@@ -190,8 +190,8 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
           <Card title="How the day adds up" description="Live: includes shifts that are still open.">
             <dl className="flex flex-col gap-2 text-sm">
               <Line label="Fuel sales" value={formatMoney(k.fuel_sales, currency)} />
-              <Line label="Shop sales" value={formatMoney(k.shop_sales, currency)} />
-              <Line label="Cost of goods sold" value={formatMoney(-(Number(k.fuel_cogs) + Number(k.shop_cogs)), currency)} />
+              <Line label="Bar sales" value={formatMoney(k.bar_sales, currency)} />
+              <Line label="Cost of goods sold" value={formatMoney(-(Number(k.fuel_cogs) + Number(k.bar_cogs)), currency)} />
               {Number(k.stock_loss) !== 0 && (
                 <Line label="Dip variance (stock loss)" value={formatMoney(-k.stock_loss, currency)} />
               )}
@@ -239,10 +239,10 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
 
         {lowStock.length > 0 && (
           <Card
-            title="Shop items to reorder"
+            title="Bar items to reorder"
             actions={
-              <Link href="/shop" className={buttonSecondary}>
-                Shop
+              <Link href="/bar" className={buttonSecondary}>
+                Bar
               </Link>
             }
           >
@@ -250,7 +250,7 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
               {lowStock.map((item) => (
                 <li key={item.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                   <span className="min-w-0 truncate text-zinc-800 dark:text-zinc-200">
-                    {item.item_name} <span className="text-zinc-400">· {item.sku}</span>
+                    {item.item_name} <span className="text-zinc-400">· {item.category}</span>
                   </span>
                   <span className="flex shrink-0 items-center gap-3">
                     <span className="tabular-nums text-zinc-600 dark:text-zinc-300">

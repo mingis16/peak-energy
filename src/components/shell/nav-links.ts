@@ -3,8 +3,8 @@ import {
   Fuel,
   Gauge,
   LayoutDashboard,
+  Martini,
   Settings,
-  ShoppingBasket,
 } from "lucide-react";
 import type { Role } from "@/lib/types";
 
@@ -19,7 +19,7 @@ export const navLinks: NavLink[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/shifts", label: "Shifts", icon: Gauge },
   { href: "/tanks", label: "Tanks", icon: Fuel },
-  { href: "/shop", label: "Shop", icon: ShoppingBasket },
+  { href: "/bar", label: "Bar", icon: Martini },
   { href: "/accounting", label: "Accounts", icon: BookOpenCheck, managerOnly: true },
   { href: "/settings", label: "Settings", icon: Settings, managerOnly: true },
 ];

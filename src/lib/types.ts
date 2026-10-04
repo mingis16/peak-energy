@@ -136,7 +136,7 @@ export interface WetstockDay {
   variance_percent_of_sales: number | null;
 }
 
-export interface ShopStock {
+export interface BarStock {
   id: string;
   item_name: string;
   sku: string;
@@ -151,7 +151,7 @@ export interface ShopStock {
   stock_status: "OK" | "LOW" | "OUT";
 }
 
-export interface ShopSale {
+export interface BarSale {
   id: string;
   item_id: string;
   quantity: number;
@@ -162,14 +162,14 @@ export interface ShopSale {
   created_at: string;
 }
 
-export interface ShopRestock {
+export interface BarRestock {
   id: string;
   item_id: string;
   quantity: number;
   unit_cost: number;
   total_cost: number;
   supplier: string | null;
-  payment_method: PaymentMethod;
+  payment_method: PaymentMethod | "OPENING"; // OPENING: counted on the shelf, not bought
   restock_date: string;
   created_at: string;
 }
@@ -233,8 +233,8 @@ export interface DashboardKpis {
   fuel_sales: number;
   fuel_cogs: number;
   fuel_by_type: { fuel_type: string; liters: number; sales: number }[];
-  shop_sales: number;
-  shop_cogs: number;
+  bar_sales: number;
+  bar_cogs: number;
   stock_loss: number;
   gross_profit: number;
   operating_expenses: number;
@@ -254,13 +254,13 @@ export interface DashboardKpis {
   shifts: { open: number; awaiting_review: number; reconciled: number; short: number };
   tanks_low: number;
   tanks_total: number;
-  shop_items_low: number;
+  bar_items_low: number;
 }
 
 export interface TrendRow {
   day: string;
   fuel_liters: number;
   fuel_sales: number;
-  shop_sales: number;
+  bar_sales: number;
   gross_profit: number;
 }

@@ -58,8 +58,8 @@ const SOURCE_LABELS: Record<string, string> = {
   SHIFT: "Shift",
   FUEL_DELIVERY: "Delivery",
   TANK_DIP: "Dip",
-  SHOP_SALE: "Shop sale",
-  SHOP_RESTOCK: "Restock",
+  BAR_SALE: "Bar sale",
+  BAR_RESTOCK: "Restock",
   TRANSACTION: "Cash book",
   OPENING_BALANCE: "Opening",
 };
@@ -197,7 +197,7 @@ async function ProfitAndLoss({ supabase, from, to, currency }: { supabase: Supab
   return (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Revenue" value={formatMoney(revenue, currency)} detail="Fuel and shop sales" />
+        <StatTile label="Revenue" value={formatMoney(revenue, currency)} detail="Fuel and bar sales" />
         <StatTile label="Cost of goods sold" value={formatMoney(cogs, currency)} detail="Incl. dip variance" />
         <StatTile
           label="Gross profit"
@@ -302,7 +302,7 @@ async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; 
     <div className="flex flex-col gap-5">
       <Card
         title="Record money in or out"
-        description="Expenses, supplier payments, bank deposits and other income. Fuel and shop sales post themselves."
+        description="Expenses, supplier payments, bank deposits and other income. Fuel and bar sales post themselves."
       >
         <ActionForm action={addTransaction} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Category" htmlFor="category">
@@ -551,7 +551,7 @@ const KEY_ACCOUNTS = [
   { code: "1100", label: "Owed by credit customers" },
   { code: "2000", label: "Owed to suppliers" },
   { code: "1200", label: "Fuel stock (at cost)" },
-  { code: "1210", label: "Shop stock (at cost)" },
+  { code: "1210", label: "Bar stock (at cost)" },
 ];
 
 async function Balances({ supabase, asOf, currency }: { supabase: Supabase; asOf: string; currency: string }) {

@@ -285,7 +285,7 @@ export default async function SettingsPage() {
           title="Staff"
           description={
             owner
-              ? "Attendants run shifts and record dips and shop sales. Managers also handle pricing, deliveries and accounts."
+              ? "Attendants run shifts and record dips and bar sales. Managers also handle pricing, deliveries and accounts."
               : "Only the owner can change roles."
           }
         >

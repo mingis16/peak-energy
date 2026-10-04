@@ -9,7 +9,7 @@ Petrol station management and accounting: wet and dry stock, pump meter sales, s
 | Module | Where | Highlights |
 |---|---|---|
 | Inventory & tanks | `/tanks`, `/settings` | Tank levels against reorder thresholds and days of cover; opening and closing dips; deliveries with transit-loss tracking; a daily wet-stock reconciliation (opening + deliveries − meter sales vs closing dip) |
-| Shop & lubricants | `/shop` | SKU stock, low-stock flags, sales at shelf price, restocks at weighted-average cost |
+| Bar | `/bar` | The club bar: add your own drinks, opening counts and restocks at weighted-average cost, sales at menu price, low-stock flags |
 | Shifts | `/shifts` | Attendants log opening and closing meters per pump. The handover (cash, credit slips, bank/mobile money) is compared with meter sales and any shortage is flagged immediately. A manager approves the shift to post it to the ledger |
 | Accounting | `/accounting` | Profit & loss (gross and net), a cash book for expenses and other money in or out, the general ledger, and a trial balance |
 | Dashboard | `/` | Live KPIs: volume sold, cash collected vs expected, gross/net earnings, tank status, 14-day sales chart. Updates through Supabase Realtime |
@@ -22,7 +22,7 @@ The first account to sign up becomes the **owner**. Everyone after that starts a
 |---|---|
 | Owner | Everything, including staff roles |
 | Manager | Prices, tanks, pumps, deliveries, shift approval, accounts |
-| Attendant | Their own shifts and meter readings, tank dips, shop sales |
+| Attendant | Their own shifts and meter readings, tank dips, bar sales |
 
 Every permission is enforced in Postgres with row-level security, so the UI cannot be bypassed through the API.
 
@@ -36,7 +36,7 @@ Each operational record posts its own balanced journal entry through database tr
 | Shift approved | Cash, Bank, Receivables (credit slips), Cash Shortages | Fuel Sales, Cash Overages |
 | …and its cost | Cost of Fuel Sold | Fuel Inventory |
 | Closing dip below book | Fuel Stock Losses | Fuel Inventory (reversed for a gain) |
-| Shop sale | Cash/Bank/Receivables, Cost of Shop Goods | Shop Sales, Shop Inventory |
+| Bar sale | Cash/Bank/Receivables, Cost of Bar Sales | Bar Sales, Bar Inventory |
 | Cash-book expense | Category account (e.g. Salaries) | Cash/Bank/Payable |
 
 - **Cost of goods sold** uses the weighted average cost per litre, which each delivery updates. The waybill amount is what you pay, so transit loss raises the cost of the litres actually received.
@@ -60,7 +60,7 @@ Each operational record posts its own balanced journal entry through database tr
    - **Dashboard:** paste each file into the SQL Editor and run them in order.
 3. Under **Authentication → URL Configuration**, set the Site URL to your app's URL and add `<your-url>/auth/callback` to the redirect URLs.
 
-`supabase/seed.sql` holds demo tanks, pumps, prices and shop items for local development (`supabase db reset` applies it). Don't run it against a live station.
+`supabase/seed.sql` holds demo tanks, pumps, prices and bar stock for local development (`supabase db reset` applies it). Don't run it against a live station.
 
 ### 2. Environment
 
@@ -82,7 +82,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000, sign up (you become the owner), then in **Settings**:
+Open http://localhost:3001, sign up (you become the owner), then in **Settings**:
 
 1. Set the station name, currency (default `SLE`) and shortage tolerance.
 2. Set the pump price and average cost for each fuel.
@@ -102,7 +102,7 @@ npm run test:db     # migrations + business rules against an embedded Postgres (
 npm run build
 ```
 
-`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, shop sales and the cash book. It asserts every posting, the P&L, the trial balance and the RLS rules for each role.
+`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, bar sales and the cash book. It asserts every posting, the P&L, the trial balance and the RLS rules for each role, and checks that the shop-to-bar migration carries existing rows over.
 
 ### Layout
 
@@ -112,7 +112,7 @@ supabase/
   tests/        database test suite
   seed.sql      demo data
 src/
-  app/(app)/    dashboard, shifts, tanks, shop, accounting, settings (+ server actions)
+  app/(app)/    dashboard, shifts, tanks, bar, accounting, settings (+ server actions)
   app/login, signup, pending, auth/   authentication
   components/   ui kit, app shell, charts, dashboard and shift components
   lib/          Supabase clients, auth guards, action helpers, formatting, types
