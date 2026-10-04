@@ -48,15 +48,20 @@ export async function startShift(_prev: ActionState, form: FormData): Promise<Ac
 interface PumpRow {
   id: string;
   pump_number: string;
+  current_meter: number;
 }
 
-/** Saves every pump row that has a closing meter. Rows left blank are skipped. */
+/**
+ * Saves every pump row that has a closing meter. Rows left blank are skipped.
+ * Opening meters are not taken from the form: the database opens each reading
+ * where the pump's last one closed.
+ */
 export async function saveReadings(shiftId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(STAFF_ROLES);
 
     const [{ data: pumps, error: pumpError }, { data: existing, error: readingError }] = await Promise.all([
-      supabase.from("pumps").select("id, pump_number").order("pump_number"),
+      supabase.from("pumps").select("id, pump_number, current_meter").order("pump_number"),
       supabase.from("pump_readings").select("id, pump_number, opening_meter, closing_meter").eq("shift_id", shiftId),
     ]);
     check(pumpError);
@@ -70,7 +75,8 @@ export async function saveReadings(shiftId: string, _prev: ActionState, form: Fo
       if (!closingRaw) continue;
 
       const label = `Pump ${pump.pump_number}`;
-      const opening = readNumber(form, `opening_${pump.id}`, `${label} opening meter`);
+      const current = byPump.get(pump.pump_number);
+      const opening = Number(current?.opening_meter ?? pump.current_meter);
       const closing = readNumber(form, `closing_${pump.id}`, `${label} closing meter`);
       if (closing < opening) {
         throw new ActionError(
@@ -78,18 +84,13 @@ export async function saveReadings(shiftId: string, _prev: ActionState, form: Fo
         );
       }
 
-      const current = byPump.get(pump.pump_number);
       const { error } = current
-        ? Number(current.opening_meter) === opening && Number(current.closing_meter) === closing
+        ? Number(current.closing_meter) === closing
           ? { error: null }
-          : await supabase
-              .from("pump_readings")
-              .update({ opening_meter: opening, closing_meter: closing })
-              .eq("id", current.id)
+          : await supabase.from("pump_readings").update({ closing_meter: closing }).eq("id", current.id)
         : await supabase.from("pump_readings").insert({
             shift_id: shiftId,
             pump_number: pump.pump_number,
-            opening_meter: opening,
             closing_meter: closing,
           });
       if (error) {

@@ -10,9 +10,10 @@ Petrol station management and accounting: wet and dry stock, pump meter sales, s
 |---|---|---|
 | Inventory & tanks | `/tanks`, `/settings` | Tank levels against reorder thresholds and days of cover; opening and closing dips; deliveries with transit-loss tracking; a daily wet-stock reconciliation (opening + deliveries − meter sales vs closing dip) |
 | Bar | `/bar` | The club bar: add your own drinks, opening counts and restocks at weighted-average cost, sales at menu price, low-stock flags |
-| Shifts | `/shifts` | Attendants log opening and closing meters per pump. The handover (cash, credit slips, bank/mobile money) is compared with meter sales and any shortage is flagged immediately. A manager approves the shift to post it to the ledger |
+| Shifts | `/shifts` | Attendants log closing meters per pump; each opening meter is where the pump last closed. The handover (cash, credit slips, bank/mobile money) is compared with meter sales and any shortage is flagged immediately. A manager approves the shift to post it to the ledger |
 | Accounting | `/accounting` | Profit & loss (gross and net), a cash book for expenses and other money in or out, the general ledger, and a trial balance |
 | Dashboard | `/` | Live KPIs: volume sold, cash collected vs expected, gross/net earnings, tank status, 14-day sales chart. Updates through Supabase Realtime |
+| Activity | `/activity` | Owner only: cash shortages by attendant, every pump meter correction, and a log of edits and deletions with who made them |
 
 ### Roles
 
@@ -20,11 +21,24 @@ The first account to sign up becomes the **owner**. Everyone after that starts a
 
 | Role | Can |
 |---|---|
-| Owner | Everything, including staff roles |
-| Manager | Prices, tanks, pumps, deliveries, shift approval, accounts |
-| Attendant | Their own shifts and meter readings, tank dips, bar sales |
+| Owner | Everything, including staff roles, shortage and dip tolerances, meter corrections on pumps in use, and the activity log |
+| Manager | Prices, tanks, pumps, deliveries, closing dips, shift approval, accounts |
+| Attendant | Their own shifts and meter readings, opening dips and bar sales, dated today (or a day either side) |
 
 Every permission is enforced in Postgres with row-level security, so the UI cannot be bypassed through the API.
+
+### Equipment setup
+
+Until a tank has its first reading, dip or delivery, a manager can set its fuel and the stock in it (Settings → Tanks); the opening stock is revalued to match. Until a pump has its first reading, its number, tank and meter can be set. Unused tanks and pumps can be removed. After that, stock changes only through readings, dips and deliveries.
+
+### Fraud controls
+
+- **Meter chain.** Every reading opens where the pump's last reading closed; nobody types an opening meter. A reading can no longer change once a later one builds on it, so litres cannot go missing between shifts.
+- **Meter corrections.** Once a pump is in use, only the owner can change its meter, with a reason (meter replaced, repaired). Every change is listed under Activity.
+- **No backdating.** Attendants can only date shifts, bar sales and dips today, or a day either side for night shifts. Managers can record earlier days.
+- **Separation of duties.** Closing dips, which reset stock and reveal losses, are recorded by a manager, not by the attendants who sold the fuel.
+- **Tolerances.** Only the owner can change the shortage and dip tolerances, since raising them hides shortages.
+- **Audit log.** Edits and deletions of readings, shifts, sales, deliveries, dips, prices, equipment, settings, roles and cash-book entries are logged with who made them and what changed. The log is written by database triggers and cannot be edited or deleted by anyone through the app.
 
 ## How the books are kept
 
@@ -102,7 +116,7 @@ npm run test:db     # migrations + business rules against an embedded Postgres (
 npm run build
 ```
 
-`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, bar sales and the cash book. It asserts every posting, the P&L, the trial balance and the RLS rules for each role, and checks that the shop-to-bar migration carries existing rows over.
+`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, bar sales and the cash book. It asserts every posting, the P&L, the trial balance, the RLS rules for each role and the fraud controls, and checks that the shop-to-bar migration carries existing rows over.
 
 ### Layout
 

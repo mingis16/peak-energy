@@ -264,3 +264,28 @@ export interface TrendRow {
   bar_sales: number;
   gross_profit: number;
 }
+
+export interface AuditEntry {
+  id: number;
+  happened_at: string;
+  actor_id: string | null;
+  actor_name: string | null;
+  table_name: string;
+  action: "INSERT" | "UPDATE" | "DELETE" | "STOCK_SET";
+  record_id: string | null;
+  /** For updates, only the fields that changed. */
+  old_data: Record<string, unknown> | null;
+  new_data: Record<string, unknown> | null;
+}
+
+export interface MeterCorrection {
+  id: string;
+  pump_id: string | null;
+  pump_number: string;
+  old_meter: number;
+  new_meter: number;
+  reason: string | null;
+  during_setup: boolean;
+  corrected_by: string | null;
+  corrected_at: string;
+}

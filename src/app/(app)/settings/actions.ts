@@ -91,20 +91,52 @@ export async function addTank(_prev: ActionState, form: FormData): Promise<Actio
 export async function updateTank(tankId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
-    const { data, error } = await supabase
-      .from("tanks")
-      .update({
-        tank_name: readText(form, "tank_name", "Tank name"),
-        capacity_liters: readNumber(form, "capacity_liters", "Capacity", { allowZero: false }),
-        reorder_level_liters: readNumber(form, "reorder_level_liters", "Reorder level"),
-        is_active: form.get("is_active") === "on",
-      })
-      .eq("id", tankId)
-      .select("id");
-    if (error?.code === "23505") throw new ActionError("A tank with that name already exists.");
+    const details = {
+      tank_name: readText(form, "tank_name", "Tank name"),
+      capacity_liters: readNumber(form, "capacity_liters", "Capacity", { allowZero: false }),
+      reorder_level_liters: readNumber(form, "reorder_level_liters", "Reorder level"),
+      is_active: form.get("is_active") === "on",
+    };
+    // Fuel and stock are on the form only while the tank is unused.
+    const stock = form.has("current_volume")
+      ? { p_tank_id: tankId, p_fuel_type: readText(form, "fuel_type", "Fuel"), p_volume: readNumber(form, "current_volume", "Stock in tank") }
+      : null;
+    if (stock && stock.p_volume > details.capacity_liters) {
+      throw new ActionError("The stock in the tank cannot be more than its capacity.");
+    }
+
+    const { data: tank, error: tankError } = await supabase.from("tanks").select("capacity_liters").eq("id", tankId).maybeSingle();
+    check(tankError);
+    if (!tank) throw new ActionError("Tank not found.");
+
+    const saveDetails = async () => {
+      const { error } = await supabase.from("tanks").update(details).eq("id", tankId);
+      if (error?.code === "23505") throw new ActionError("A tank with that name already exists.");
+      check(error);
+    };
+    const saveStock = async () => {
+      if (!stock) return;
+      const { error } = await supabase.rpc("update_tank_stock", stock);
+      check(error);
+    };
+    // Raise the capacity before adding stock; lower it only after removing stock.
+    if (details.capacity_liters >= Number(tank.capacity_liters)) {
+      await saveDetails();
+      await saveStock();
+    } else {
+      await saveStock();
+      await saveDetails();
+    }
+    return stock ? "Tank updated. Its opening stock was revalued at the fuel's average cost." : "Tank updated.";
+  });
+}
+
+export async function removeTank(tankId: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { error } = await supabase.rpc("remove_tank", { p_tank_id: tankId });
     check(error);
-    if (!data?.length) throw new ActionError("Tank not found.");
-    return "Tank updated.";
+    return "Tank removed.";
   });
 }
 
@@ -125,20 +157,52 @@ export async function addPump(_prev: ActionState, form: FormData): Promise<Actio
 export async function updatePump(pumpId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
+    const is_active = form.get("is_active") === "on";
+    // Number, tank and meter are on the form only until the pump's first reading.
+    const setup = form.has("current_meter");
+    const meter = setup ? readNumber(form, "current_meter", "Meter reading") : null;
+
     const { data, error } = await supabase
       .from("pumps")
-      .update({
-        pump_number: readText(form, "pump_number", "Pump number").toUpperCase(),
-        tank_id: readText(form, "tank_id", "Tank"),
-        current_meter: readNumber(form, "current_meter", "Meter reading"),
-        is_active: form.get("is_active") === "on",
-      })
+      .update(
+        setup
+          ? { pump_number: readText(form, "pump_number", "Pump number").toUpperCase(), tank_id: readText(form, "tank_id", "Tank"), is_active }
+          : { is_active },
+      )
       .eq("id", pumpId)
       .select("id");
     if (error?.code === "23505") throw new ActionError("A pump with that number already exists.");
     check(error);
     if (!data?.length) throw new ActionError("Pump not found.");
+
+    if (meter !== null) {
+      const { error: meterError } = await supabase.rpc("set_pump_meter", { p_pump_id: pumpId, p_meter: meter });
+      check(meterError);
+    }
     return "Pump updated.";
+  });
+}
+
+/** The owner's correction of a used pump's meter, e.g. after it is replaced. */
+export async function correctMeter(pumpId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(["owner"]);
+    const { error } = await supabase.rpc("set_pump_meter", {
+      p_pump_id: pumpId,
+      p_meter: readNumber(form, "new_meter", "New meter reading"),
+      p_reason: readText(form, "reason", "Reason"),
+    });
+    check(error);
+    return "Meter corrected. The next reading opens from the new meter.";
+  });
+}
+
+export async function removePump(pumpId: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { error } = await supabase.rpc("remove_pump", { p_pump_id: pumpId });
+    check(error);
+    return "Pump removed.";
   });
 }
 

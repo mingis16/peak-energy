@@ -18,6 +18,7 @@ import {
   formatMoney,
   formatNumber,
   formatPercent,
+  attendantDateLimits,
   PAYMENT_LABELS,
   todayISO,
 } from "@/lib/format";
@@ -94,7 +95,11 @@ export default async function TanksPage() {
         <div className="grid gap-5 lg:grid-cols-2">
           <Card
             title="Record a dip"
-            description="A closing dip resets book stock to the physical level and posts any gain or loss. Record it after the day's last meter readings."
+            description={
+              manager
+                ? "A closing dip resets book stock to the physical level and posts any gain or loss. Record it after the day's last meter readings."
+                : "Record the opening dip at the start of the day. A manager records closing dips, which show any losses."
+            }
           >
             <ActionForm action={recordDip} className="grid gap-4 sm:grid-cols-2">
               <Field label="Tank" htmlFor="dip_tank">
@@ -107,13 +112,20 @@ export default async function TanksPage() {
                 </select>
               </Field>
               <Field label="Dip" htmlFor="dip_type">
-                <select id="dip_type" name="dip_type" defaultValue="CLOSING" className={inputClass}>
+                <select id="dip_type" name="dip_type" defaultValue={manager ? "CLOSING" : "OPENING"} className={inputClass}>
                   <option value="OPENING">Opening dip (start of day)</option>
-                  <option value="CLOSING">Closing dip (end of day)</option>
+                  {manager && <option value="CLOSING">Closing dip (end of day)</option>}
                 </select>
               </Field>
               <Field label="Date" htmlFor="dip_date">
-                <input id="dip_date" name="dip_date" type="date" defaultValue={todayISO()} className={inputClass} />
+                <input
+                  id="dip_date"
+                  name="dip_date"
+                  type="date"
+                  defaultValue={todayISO()}
+                  {...(manager ? {} : attendantDateLimits())}
+                  className={inputClass}
+                />
               </Field>
               <Field label="Volume (litres)" htmlFor="volume_liters" hint="From the tank's calibration chart.">
                 <input id="volume_liters" name="volume_liters" inputMode="decimal" required className={inputClass} />

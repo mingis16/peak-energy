@@ -3,6 +3,9 @@ import {
   addFuelProduct,
   addPump,
   addTank,
+  correctMeter,
+  removePump,
+  removeTank,
   updateFuelProduct,
   updatePump,
   updateStaffRole,
@@ -11,12 +14,13 @@ import {
 } from "./actions";
 import { ActionForm, SubmitButton } from "@/components/ui/action-form";
 import { Card, EmptyState, PageHeader } from "@/components/ui/card";
+import { DeleteButton } from "@/components/ui/delete-button";
 import { Field } from "@/components/ui/field";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { buttonSecondary, inputClass } from "@/components/ui/styles";
+import { buttonSecondary, buttonSmall, inputClass } from "@/components/ui/styles";
 import { getStationSettings, requireManager } from "@/lib/auth";
 import { rows } from "@/lib/data";
-import { formatDateTime, formatLiters, formatMoney } from "@/lib/format";
+import { formatDateTime, formatLiters, formatMoney, formatNumber } from "@/lib/format";
 import type { FuelProduct, Profile, Pump, TankStatus } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -36,16 +40,19 @@ export default async function SettingsPage() {
   const currency = settings.currency_code;
   const owner = profile.role === "owner";
 
-  const [productsResult, tanksResult, pumpsResult, staffResult, historyResult] = await Promise.all([
+  const [productsResult, tanksResult, pumpsResult, staffResult, historyResult, setupResult] = await Promise.all([
     supabase.from("fuel_products").select("*").order("code"),
     supabase.from("v_tank_status").select("*").order("tank_name"),
     supabase.from("pumps").select("*").order("pump_number"),
     supabase.from("profiles").select("*").order("created_at"),
     supabase.from("fuel_price_history").select("*").order("changed_at", { ascending: false }).limit(10),
+    supabase.from("v_equipment_setup").select("id, in_setup"),
   ]);
   const products = rows<FuelProduct>(productsResult, "fuel products");
   const tanks = rows<TankStatus>(tanksResult, "tanks");
   const pumps = rows<Pump>(pumpsResult, "pumps");
+  // Unused tanks and pumps, whose stock, fuel and meters can still be corrected.
+  const inSetup = new Set(rows<{ id: string; in_setup: boolean }>(setupResult, "equipment").filter((e) => e.in_setup).map((e) => e.id));
   const staff = rows<Profile>(staffResult, "staff");
   const history = rows<{ id: string; fuel_type: string; old_price: number | null; new_price: number; changed_at: string }>(
     historyResult,
@@ -73,15 +80,31 @@ export default async function SettingsPage() {
             <Field label="Currency code" htmlFor="currency_code" hint="ISO code, e.g. SLE.">
               <input id="currency_code" name="currency_code" defaultValue={currency} required maxLength={3} className={inputClass} />
             </Field>
-            <Field label="Shortage tolerance" htmlFor="shortage_tolerance" hint="Shift shortages up to this amount are not flagged.">
-              <input id="shortage_tolerance" name="shortage_tolerance" inputMode="decimal" defaultValue={settings.shortage_tolerance} className={inputClass} />
+            <Field
+              label="Shortage tolerance"
+              htmlFor="shortage_tolerance"
+              hint={owner ? "Shift shortages up to this amount are not flagged." : "Only the owner can change this."}
+            >
+              <input
+                id="shortage_tolerance"
+                name="shortage_tolerance"
+                inputMode="decimal"
+                defaultValue={settings.shortage_tolerance}
+                readOnly={!owner}
+                className={inputClass}
+              />
             </Field>
-            <Field label="Dip variance tolerance (%)" htmlFor="dip_variance_tolerance_percent" hint="Of litres sold that day.">
+            <Field
+              label="Dip variance tolerance (%)"
+              htmlFor="dip_variance_tolerance_percent"
+              hint={owner ? "Of litres sold that day." : "Only the owner can change this."}
+            >
               <input
                 id="dip_variance_tolerance_percent"
                 name="dip_variance_tolerance_percent"
                 inputMode="decimal"
                 defaultValue={settings.dip_variance_tolerance_percent}
+                readOnly={!owner}
                 className={inputClass}
               />
             </Field>
@@ -159,39 +182,70 @@ export default async function SettingsPage() {
 
         <Card
           title="Tanks"
-          description="Volume changes only through meter sales, deliveries and closing dips, so it is set once here as opening stock."
+          description="Before a tank is used, set its fuel and the stock in it now (from a dip). After its first reading, dip or delivery, stock changes only through those."
         >
           <div className="flex flex-col gap-3">
             {tanks.length === 0 && <EmptyState>No tanks yet.</EmptyState>}
-            {tanks.map((t) => (
-              <ActionForm
-                key={t.id}
-                action={updateTank.bind(null, t.id)}
-                resetOnSuccess={false}
-                className={`${rowForm} sm:grid-cols-2 lg:grid-cols-[1fr_6rem_9rem_9rem_7rem_auto]`}
-              >
-                <Field label="Tank name" htmlFor={`tank-name-${t.id}`}>
-                  <input id={`tank-name-${t.id}`} name="tank_name" defaultValue={t.tank_name} className={inputClass} />
-                </Field>
-                <div>
-                  <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Fuel</p>
-                  <p className="py-2 text-sm text-zinc-900 dark:text-zinc-50">{t.fuel_type}</p>
+            {tanks.map((t) => {
+              const setup = inSetup.has(t.id);
+              return (
+                <div key={t.id} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                  <ActionForm
+                    action={updateTank.bind(null, t.id)}
+                    resetOnSuccess={false}
+                    className={`grid items-end gap-3 sm:grid-cols-2 ${
+                      setup ? "lg:grid-cols-[1fr_7rem_8rem_8rem_8rem_6rem_auto]" : "lg:grid-cols-[1fr_6rem_9rem_9rem_7rem_auto]"
+                    }`}
+                  >
+                    <Field label="Tank name" htmlFor={`tank-name-${t.id}`}>
+                      <input id={`tank-name-${t.id}`} name="tank_name" defaultValue={t.tank_name} className={inputClass} />
+                    </Field>
+                    {setup ? (
+                      <Field label="Fuel" htmlFor={`tank-fuel-${t.id}`}>
+                        <select id={`tank-fuel-${t.id}`} name="fuel_type" defaultValue={t.fuel_type} className={inputClass}>
+                          {products.map((p) => (
+                            <option key={p.code} value={p.code}>
+                              {p.code}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    ) : (
+                      <ReadOnlyField label="Fuel" value={t.fuel_type} />
+                    )}
+                    <Field label="Capacity (L)" htmlFor={`cap-${t.id}`}>
+                      <input id={`cap-${t.id}`} name="capacity_liters" inputMode="decimal" defaultValue={t.capacity_liters} className={inputClass} />
+                    </Field>
+                    {setup && (
+                      <Field label="Stock in tank (L)" htmlFor={`stock-${t.id}`}>
+                        <input id={`stock-${t.id}`} name="current_volume" inputMode="decimal" defaultValue={t.current_volume} className={inputClass} />
+                      </Field>
+                    )}
+                    <Field label="Reorder level (L)" htmlFor={`reorder-${t.id}`}>
+                      <input id={`reorder-${t.id}`} name="reorder_level_liters" inputMode="decimal" defaultValue={t.reorder_level_liters} className={inputClass} />
+                    </Field>
+                    <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
+                      <input type="checkbox" name="is_active" defaultChecked={t.is_active} /> In use
+                    </label>
+                    <SubmitButton className={buttonSecondary}>Save</SubmitButton>
+                  </ActionForm>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {setup
+                        ? `Not used yet, so fuel and stock can still be corrected · valued at ${formatMoney(t.stock_value, currency)}`
+                        : `Book stock ${formatLiters(t.current_volume, 0)} · valued at ${formatMoney(t.stock_value, currency)} · changes only through readings, dips and deliveries`}
+                    </p>
+                    {setup && (
+                      <DeleteButton
+                        action={removeTank.bind(null, t.id)}
+                        label="Remove"
+                        confirm={`Remove ${t.tank_name}? Its opening stock comes out of the books.`}
+                      />
+                    )}
+                  </div>
                 </div>
-                <Field label="Capacity (L)" htmlFor={`cap-${t.id}`}>
-                  <input id={`cap-${t.id}`} name="capacity_liters" inputMode="decimal" defaultValue={t.capacity_liters} className={inputClass} />
-                </Field>
-                <Field label="Reorder level (L)" htmlFor={`reorder-${t.id}`}>
-                  <input id={`reorder-${t.id}`} name="reorder_level_liters" inputMode="decimal" defaultValue={t.reorder_level_liters} className={inputClass} />
-                </Field>
-                <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
-                  <input type="checkbox" name="is_active" defaultChecked={t.is_active} /> In use
-                </label>
-                <SubmitButton className={buttonSecondary}>Save</SubmitButton>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400 sm:col-span-2 lg:col-span-6">
-                  Book stock {formatLiters(t.current_volume, 0)} · valued at {formatMoney(t.stock_value, currency)}
-                </p>
-              </ActionForm>
-            ))}
+              );
+            })}
           </div>
 
           <details className="mt-4" open={tanks.length === 0}>
@@ -223,37 +277,79 @@ export default async function SettingsPage() {
           </details>
         </Card>
 
-        <Card title="Pumps" description="One row per metered nozzle. The meter is the totaliser reading the next shift opens with.">
+        <Card
+          title="Pumps"
+          description="One row per metered nozzle. Before a pump's first reading, enter its real meter. After that, each shift opens where the last one closed, and only the owner can correct a meter."
+        >
           <div className="flex flex-col gap-3">
             {pumps.length === 0 && <EmptyState>No pumps yet.</EmptyState>}
-            {pumps.map((p) => (
-              <ActionForm
-                key={p.id}
-                action={updatePump.bind(null, p.id)}
-                resetOnSuccess={false}
-                className={`${rowForm} sm:grid-cols-2 lg:grid-cols-[8rem_1fr_10rem_7rem_auto]`}
-              >
-                <Field label="Pump" htmlFor={`pump-${p.id}`}>
-                  <input id={`pump-${p.id}`} name="pump_number" defaultValue={p.pump_number} className={inputClass} />
-                </Field>
-                <Field label="Draws from" htmlFor={`pump-tank-${p.id}`}>
-                  <select id={`pump-tank-${p.id}`} name="tank_id" defaultValue={p.tank_id} className={inputClass}>
-                    {tanks.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.tank_name} ({t.fuel_type})
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Meter" htmlFor={`meter-${p.id}`}>
-                  <input id={`meter-${p.id}`} name="current_meter" inputMode="decimal" defaultValue={p.current_meter} className={inputClass} />
-                </Field>
-                <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
-                  <input type="checkbox" name="is_active" defaultChecked={p.is_active} /> In use
-                </label>
-                <SubmitButton className={buttonSecondary}>Save</SubmitButton>
-              </ActionForm>
-            ))}
+            {pumps.map((p) => {
+              const setup = inSetup.has(p.id);
+              const tank = tanks.find((t) => t.id === p.tank_id);
+              return (
+                <div key={p.id} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                  <ActionForm
+                    action={updatePump.bind(null, p.id)}
+                    resetOnSuccess={false}
+                    className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[8rem_1fr_10rem_7rem_auto]"
+                  >
+                    {setup ? (
+                      <>
+                        <Field label="Pump" htmlFor={`pump-${p.id}`}>
+                          <input id={`pump-${p.id}`} name="pump_number" defaultValue={p.pump_number} className={inputClass} />
+                        </Field>
+                        <Field label="Draws from" htmlFor={`pump-tank-${p.id}`}>
+                          <select id={`pump-tank-${p.id}`} name="tank_id" defaultValue={p.tank_id} className={inputClass}>
+                            {tanks.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.tank_name} ({t.fuel_type})
+                              </option>
+                            ))}
+                          </select>
+                        </Field>
+                        <Field label="Meter" htmlFor={`meter-${p.id}`}>
+                          <input id={`meter-${p.id}`} name="current_meter" inputMode="decimal" defaultValue={p.current_meter} className={inputClass} />
+                        </Field>
+                      </>
+                    ) : (
+                      <>
+                        <ReadOnlyField label="Pump" value={p.pump_number} />
+                        <ReadOnlyField label="Draws from" value={tank ? `${tank.tank_name} (${tank.fuel_type})` : "—"} />
+                        <ReadOnlyField label="Meter" value={formatNumber(p.current_meter, 2)} />
+                      </>
+                    )}
+                    <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
+                      <input type="checkbox" name="is_active" defaultChecked={p.is_active} /> In use
+                    </label>
+                    <SubmitButton className={buttonSecondary}>Save</SubmitButton>
+                  </ActionForm>
+                  <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {setup
+                        ? "No readings yet, so the number, tank and meter can still be corrected."
+                        : "The next shift opens at this meter."}
+                    </p>
+                    {setup && (
+                      <DeleteButton action={removePump.bind(null, p.id)} label="Remove" confirm={`Remove pump ${p.pump_number}?`} />
+                    )}
+                    {!setup && owner && (
+                      <details className="w-full sm:w-auto">
+                        <summary className={`${buttonSecondary} ${buttonSmall} cursor-pointer list-none`}>Correct meter</summary>
+                        <ActionForm action={correctMeter.bind(null, p.id)} className="mt-2 grid gap-2 sm:grid-cols-[9rem_14rem_auto] sm:items-end">
+                          <Field label="New meter" htmlFor={`correct-${p.id}`}>
+                            <input id={`correct-${p.id}`} name="new_meter" inputMode="decimal" required className={inputClass} />
+                          </Field>
+                          <Field label="Reason" htmlFor={`reason-${p.id}`}>
+                            <input id={`reason-${p.id}`} name="reason" required placeholder="e.g. meter replaced" className={inputClass} />
+                          </Field>
+                          <SubmitButton className={buttonSecondary}>Correct</SubmitButton>
+                        </ActionForm>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           {tanks.length > 0 && (
@@ -322,5 +418,14 @@ export default async function SettingsPage() {
         </Card>
       </div>
     </>
+  );
+}
+
+function ReadOnlyField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{label}</p>
+      <p className="py-2 text-sm text-zinc-900 dark:text-zinc-50">{value}</p>
+    </div>
   );
 }

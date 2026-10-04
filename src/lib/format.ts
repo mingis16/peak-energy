@@ -72,6 +72,12 @@ export function todayISO(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: STATION_TIMEZONE }).format(new Date());
 }
 
+/** Dates attendants may record: today, or a day either side. The database enforces the same rule. */
+export function attendantDateLimits(): { min: string; max: string } {
+  const today = todayISO();
+  return { min: addDaysISO(today, -1), max: addDaysISO(today, 1) };
+}
+
 export function addDaysISO(isoDate: string, days: number): string {
   const [y, m, d] = isoDate.split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d + days));

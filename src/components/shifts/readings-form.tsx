@@ -14,8 +14,7 @@ export interface ReadingRow {
   tankName: string;
   fuelType: string;
   price: number;
-  /** Pump totaliser before this shift. */
-  lastMeter: number;
+  /** Where the pump's last reading closed; the database fixes it, nobody types it. */
   opening: number;
   closing: number | null;
   saved: boolean;
@@ -37,35 +36,25 @@ export function ReadingsForm({
   editable: boolean;
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
 }) {
-  const [values, setValues] = useState(() =>
-    Object.fromEntries(
-      rows.map((r) => [r.pumpId, { opening: String(r.opening), closing: r.closing === null ? "" : String(r.closing) }]),
-    ),
+  const [closings, setClosings] = useState<Record<string, string>>(() =>
+    Object.fromEntries(rows.map((r) => [r.pumpId, r.closing === null ? "" : String(r.closing)])),
   );
 
-  // Rows can change after a save (e.g. a pump added); fall back to the row's own values.
-  const valueOf = (row: ReadingRow) =>
-    values[row.pumpId] ?? { opening: String(row.opening), closing: row.closing === null ? "" : String(row.closing) };
+  // Rows can change after a save (e.g. a pump added); fall back to the row's own value.
+  const closingOf = (row: ReadingRow) => closings[row.pumpId] ?? (row.closing === null ? "" : String(row.closing));
 
   const computed = rows.map((row) => {
-    const opening = parse(valueOf(row).opening);
-    const closing = parse(valueOf(row).closing);
-    const liters = opening !== null && closing !== null ? closing - opening : null;
+    const closing = parse(closingOf(row));
+    const liters = closing !== null ? closing - row.opening : null;
     return {
       row,
-      opening,
-      closing,
       liters,
       amount: liters !== null && liters >= 0 ? Math.round(liters * row.price * 100) / 100 : null,
       invalid: liters !== null && liters < 0,
-      meterJump: opening !== null && !row.saved && opening !== row.lastMeter,
     };
   });
   const totalLiters = computed.reduce((sum, c) => sum + (c.liters && c.liters > 0 ? c.liters : 0), 0);
   const totalAmount = computed.reduce((sum, c) => sum + (c.amount ?? 0), 0);
-
-  const set = (row: ReadingRow, field: "opening" | "closing", value: string) =>
-    setValues((prev) => ({ ...prev, [row.pumpId]: { ...valueOf(row), ...prev[row.pumpId], [field]: value } }));
 
   const table = (
     <div className="-mx-4 overflow-x-auto px-4 md:-mx-5 md:px-5">
@@ -81,7 +70,7 @@ export function ReadingsForm({
           </tr>
         </thead>
         <tbody>
-          {computed.map(({ row, liters, amount, invalid, meterJump }) => (
+          {computed.map(({ row, liters, amount, invalid }) => (
             <tr key={row.pumpId}>
               <td className={tdClass}>
                 <p className="font-medium text-zinc-900 dark:text-zinc-50">{row.pumpNumber}</p>
@@ -90,28 +79,7 @@ export function ReadingsForm({
                 </p>
               </td>
               <td className={`${tdClass} ${numClass}`}>{formatNumber(row.price, 2)}</td>
-              <td className={`${tdClass} ${numClass}`}>
-                {editable ? (
-                  <>
-                    <input
-                      aria-label={`${row.pumpNumber} opening meter`}
-                      name={`opening_${row.pumpId}`}
-                      inputMode="decimal"
-                      value={valueOf(row).opening}
-                      onChange={(e) => set(row, "opening", e.target.value)}
-                      className={clsx(inputClass, "w-28 text-right tabular-nums")}
-                    />
-                    {meterJump && (
-                      <p className="mt-1 flex items-center justify-end gap-1 text-[11px] text-zinc-500">
-                        <AlertTriangle aria-hidden className="h-3 w-3 text-warning" />
-                        Last closing was {formatNumber(row.lastMeter, 2)}
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  formatNumber(row.opening, 2)
-                )}
-              </td>
+              <td className={`${tdClass} ${numClass}`}>{formatNumber(row.opening, 2)}</td>
               <td className={`${tdClass} ${numClass}`}>
                 {editable ? (
                   <input
@@ -119,8 +87,8 @@ export function ReadingsForm({
                     name={`closing_${row.pumpId}`}
                     inputMode="decimal"
                     placeholder="—"
-                    value={valueOf(row).closing}
-                    onChange={(e) => set(row, "closing", e.target.value)}
+                    value={closingOf(row)}
+                    onChange={(e) => setClosings((prev) => ({ ...prev, [row.pumpId]: e.target.value }))}
                     aria-invalid={invalid}
                     className={clsx(
                       inputClass,
@@ -173,7 +141,7 @@ export function ReadingsForm({
       <div className="flex flex-wrap items-center gap-3">
         <SubmitButton>Save readings</SubmitButton>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Pumps without a closing meter are skipped. Prices come from Settings.
+          Each opening meter is where that pump&apos;s last reading closed. Pumps without a closing meter are skipped.
         </p>
       </div>
     </ActionForm>

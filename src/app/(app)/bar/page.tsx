@@ -9,7 +9,7 @@ import { stockStatusBadge } from "@/components/ui/status-badge";
 import { buttonSecondary, buttonSmall, inputClass, numClass, tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { getStationSettings, isManager, requireStaff } from "@/lib/auth";
 import { rows } from "@/lib/data";
-import { addDaysISO, formatDate, formatMoney, formatNumber, PAYMENT_LABELS, todayISO } from "@/lib/format";
+import { addDaysISO, attendantDateLimits, formatDate, formatMoney, formatNumber, PAYMENT_LABELS, todayISO } from "@/lib/format";
 import type { BarRestock, BarSale, BarStock } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Bar" };
@@ -91,7 +91,14 @@ export default async function BarPage() {
                   </select>
                 </Field>
                 <Field label="Date" htmlFor="sale_date">
-                  <input id="sale_date" name="sale_date" type="date" defaultValue={todayISO()} className={inputClass} />
+                  <input
+                    id="sale_date"
+                    name="sale_date"
+                    type="date"
+                    defaultValue={todayISO()}
+                    {...(manager ? {} : attendantDateLimits())}
+                    className={inputClass}
+                  />
                 </Field>
                 <div className="flex items-end">
                   <SubmitButton>Record sale</SubmitButton>

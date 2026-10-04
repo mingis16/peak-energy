@@ -58,3 +58,10 @@ export async function requireManager() {
   if (!isManager(session.profile.role)) redirect("/");
   return session;
 }
+
+/** For pages: the owner only. */
+export async function requireOwner() {
+  const session = await requireStaff();
+  if (session.profile.role !== "owner") redirect("/");
+  return session;
+}

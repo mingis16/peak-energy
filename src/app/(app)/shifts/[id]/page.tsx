@@ -65,7 +65,6 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
         tankName: pump.tanks?.tank_name ?? "",
         fuelType,
         price: Number(reading?.price_per_liter ?? prices.get(fuelType) ?? 0),
-        lastMeter: Number(pump.current_meter),
         opening: Number(reading?.opening_meter ?? pump.current_meter),
         closing: reading ? Number(reading.closing_meter) : null,
         saved: Boolean(reading),

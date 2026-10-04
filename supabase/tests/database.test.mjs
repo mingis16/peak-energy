@@ -147,10 +147,39 @@ await as(MANAGER, () => q(`insert into pumps (pump_number, tank_id, current_mete
 const status = await q(`select tank_name, stock_status from v_tank_status order by tank_name`);
 check("tank 2 below reorder level is LOW", status[1].stock_status === "LOW", status);
 
+console.log("\n== equipment setup");
+const T3 = (await as(MANAGER, () => one(`insert into tanks (tank_name, fuel_type, capacity_liters, current_volume, reorder_level_liters)
+  values ('Tank 3', 'PMS', 10000, 2000, 1000) returning id`))).id;
+await as(MANAGER, () => q(`select update_tank_stock($1, 'AGO', 3000)`, [T3]));
+const t3 = await one(`select fuel_type, current_volume from tanks where id = $1`, [T3]);
+const t3Opening = await q(`select debit from v_ledger where source_type = 'OPENING_BALANCE' and source_id = $1 and account_code = '1200'`, [T3]);
+check("unused tank: fuel and stock corrected, opening re-posted (3000 L AGO × 27)",
+  t3.fuel_type === "AGO" && num(t3.current_volume) === 3000 && t3Opening.length === 1 && num(t3Opening[0].debit) === 81000, { t3, t3Opening });
+await expectError("attendant cannot set tank stock", () =>
+  as(ATTENDANT, () => q(`select update_tank_stock($1, 'AGO', 1)`, [T3])), /Only a manager/);
+
+await as(MANAGER, () => q(`insert into pumps (pump_number, tank_id, current_meter) values ('P9', $1, 0)`, [T3]));
+const P9 = (await one(`select id from pumps where pump_number = 'P9'`)).id;
+await as(MANAGER, () => q(`select set_pump_meter($1, 4321)`, [P9]));
+await as(MANAGER, () => q(`update pumps set pump_number = 'P10' where id = $1`, [P9]));
+const p9 = await one(`select pump_number, current_meter from pumps where id = $1`, [P9]);
+const p9Log = await one(`select during_setup, new_meter from meter_corrections where pump_id = $1`, [P9]);
+check("unused pump: manager sets its real meter and number; logged as setup",
+  p9.pump_number === "P10" && num(p9.current_meter) === 4321 && p9Log.during_setup === true && num(p9Log.new_meter) === 4321, { p9, p9Log });
+await expectError("nobody edits a meter directly", () =>
+  as(MANAGER, () => q(`update pumps set current_meter = 1 where id = $1`, [P9])), /permission denied/);
+await expectError("a tank with pumps cannot be removed", () =>
+  as(MANAGER, () => q(`select remove_tank($1)`, [T3])), /Pumps still draw/);
+await as(MANAGER, () => q(`select remove_pump($1)`, [P9]));
+await as(MANAGER, () => q(`select remove_tank($1)`, [T3]));
+check("unused pump and tank removed, with the tank's opening entry",
+  (await one(`select count(*)::int c from tanks where id = $1`, [T3])).c === 0 &&
+  (await one(`select count(*)::int c from journal_entries where source_id = $1`, [T3])).c === 0);
+
 console.log("\n== shift: readings, handover, reconciliation");
 const D1 = "2026-10-01";
-await as(ATTENDANT, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, $2, 'OPENING', 10000)`, [T1, D1]));
-const S1 = (await as(ATTENDANT, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Morning', $2) returning id`, [D1, ATTENDANT]))).id;
+await as(MANAGER, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, $2, 'OPENING', 10000)`, [T1, D1]));
+const S1 = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Morning', $2) returning id`, [D1, ATTENDANT]))).id;
 await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, opening_meter, closing_meter, price_per_liter) values
   ($1, 'P1', 1000, 1500, 1), ($1, 'P2', 5000, 5300, null), ($1, 'P3', 200, 600, null)`, [S1]));
 const r1 = await one(`select price_per_liter, fuel_type, tank_id, reading_date::text, cost_per_liter from pump_readings where pump_number = 'P1'`);
@@ -162,9 +191,15 @@ await as(ATTENDANT, () => q(`update pump_readings set closing_meter = 1600 where
 vols = await q(`select current_volume from tanks where id = $1`, [T1]);
 check("editing a reading adjusts by the difference (9100)", num(vols[0].current_volume) === 9100, vols);
 check("pump totaliser follows closing meter", num((await one(`select current_meter from pumps where pump_number='P1'`)).current_meter) === 1600);
+await expectError("a used tank's stock cannot be set by hand", () =>
+  as(MANAGER, () => q(`select update_tank_stock($1, 'PMS', 5000)`, [T1])), /already has meter readings/);
+await expectError("a used pump keeps its number", () =>
+  as(MANAGER, () => q(`update pumps set pump_number = 'PX' where pump_number = 'P1'`)), /fixed/);
+await expectError("a manager cannot correct a used pump's meter", () =>
+  as(MANAGER, () => q(`select set_pump_meter(id, 1) from pumps where pump_number = 'P1'`)), /only the owner/);
 
 await expectError("closing below opening rejected", () =>
-  as(ATTENDANT, () => q(`update pump_readings set closing_meter = 10 where shift_id = $1 and pump_number = 'P3'`, [S1])), /closing_after_opening/);
+  as(ATTENDANT, () => q(`update pump_readings set closing_meter = 10 where shift_id = $1 and pump_number = 'P3'`, [S1])), /below the opening meter/);
 
 const live = await as(MANAGER, () => one(`select * from v_shift_summary where id = $1`, [S1]));
 check("live expected sales while open = 39800", num(live.expected_sales) === 39800 && live.variance === null, live);
@@ -180,7 +215,7 @@ await expectError("readings locked after handover", () =>
 check("attendant cannot reconcile (RLS filters submitted shift)",
   (await as(ATTENDANT, () => q(`update shifts set status = 'RECONCILED' where id = $1 returning id`, [S1]))).length === 0 &&
   (await one(`select status from shifts where id = $1`, [S1])).status === "SUBMITTED");
-const S1b = (await as(ATTENDANT, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Night', $2) returning id`, [D1, ATTENDANT]))).id;
+const S1b = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Night', $2) returning id`, [D1, ATTENDANT]))).id;
 await expectError("attendant cannot jump an open shift straight to RECONCILED", () =>
   as(ATTENDANT, () => q(`update shifts set status = 'RECONCILED' where id = $1`, [S1b])), /row-level security|cannot move/);
 await as(ATTENDANT, () => q(`delete from shifts where id = $1`, [S1b]));
@@ -216,7 +251,7 @@ await expectError("attendant cannot record deliveries", () =>
   as(ATTENDANT, () => q(`insert into fuel_deliveries (tank_id, supplier, invoiced_liters, received_liters, unit_cost) values ($1, 'X', 1, 1, 1)`, [T2])), /row-level security/);
 
 console.log("\n== closing dip & wet-stock variance");
-await as(ATTENDANT, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, $2, 'CLOSING', 9050)`, [T1, D1]));
+await as(MANAGER, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, $2, 'CLOSING', 9050)`, [T1, D1]));
 const dip = await one(`select book_volume, variance_liters, journal_entry_id from tank_dips where tank_id = $1 and dip_type = 'CLOSING'`, [T1]);
 check("dip variance = 9050 - 9100 = -50", num(dip.book_volume) === 9100 && num(dip.variance_liters) === -50, dip);
 check("book stock reset to physical", num((await one(`select current_volume from tanks where id = $1`, [T1])).current_volume) === 9050);
@@ -225,25 +260,48 @@ check("stock loss 50*25 = 1250 posted", num(lines[0].credit) === 1250 && lines[1
 const ws = await as(MANAGER, () => one(`select * from v_wetstock_daily where tank_id = $1 and day = $2`, [T1, D1]));
 check("wet-stock view: 10000 + 0 - 900 = 9100 expected, -50 variance", num(ws.opening_stock) === 10000 && num(ws.meter_sales_liters) === 900 && num(ws.expected_closing) === 9100 && num(ws.variance_liters) === -50 && num(ws.variance_percent_of_sales) === -5.56, ws);
 
-const S2 = (await as(ATTENDANT, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Afternoon', $2) returning id`, [D1, ATTENDANT]))).id;
+const S2 = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Afternoon', $2) returning id`, [D1, ATTENDANT]))).id;
 await expectError("readings on/before a closing dip are blocked", () =>
   as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, opening_meter, closing_meter) values ($1, 'P1', 1600, 1700)`, [S2])), /closing dip/);
 await as(ATTENDANT, () => q(`delete from shifts where id = $1`, [S2]));
-const S3 = (await as(ATTENDANT, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-10-02', 'Morning', $1) returning id`, [ATTENDANT]))).id;
-await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, opening_meter, closing_meter) values ($1, 'P1', 1600, 1700)`, [S3]));
+const S3 = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-10-02', 'Morning', $1) returning id`, [ATTENDANT]))).id;
+await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, opening_meter, closing_meter) values ($1, 'P1', 1650, 1700)`, [S3]));
+check("opening meter comes from the pump (1600), not the 1650 the attendant typed",
+  num((await one(`select opening_meter from pump_readings where shift_id = $1`, [S3])).opening_meter) === 1600);
 check("next day's readings accepted (9050 - 100 = 8950)", num((await one(`select current_volume from tanks where id = $1`, [T1])).current_volume) === 8950);
 await expectError("closing dips must be recorded in date order", () =>
   as(MANAGER, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, '2026-09-30', 'CLOSING', 9000)`, [T1])), /later closing dip/);
 const openWs = await as(MANAGER, () => one(`select opening_stock, opening_source from v_wetstock_daily where tank_id = $1 and day = '2026-10-02'`, [T1]));
 check("next day opening falls back to previous closing dip", num(openWs.opening_stock) === 9050 && openWs.opening_source === "PREVIOUS_CLOSING_DIP", openWs);
 
+console.log("\n== meter chain");
+const S4 = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-10-02', 'Night', $1) returning id`, [ATTENDANT]))).id;
+await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, closing_meter) values ($1, 'P2', 5400)`, [S3]));
+await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, closing_meter) values ($1, 'P2', 5500)`, [S4]));
+check("the next shift opens P2 where the last one closed (5400)",
+  num((await one(`select opening_meter from pump_readings where shift_id = $1`, [S4])).opening_meter) === 5400);
+await expectError("an earlier reading cannot change once a later one builds on it", () =>
+  as(ATTENDANT, () => q(`update pump_readings set closing_meter = 5350 where shift_id = $1 and pump_number = 'P2'`, [S3])), /later reading/);
+await expectError("…nor be deleted", () =>
+  as(ATTENDANT, () => q(`delete from pump_readings where shift_id = $1 and pump_number = 'P2'`, [S3])), /later reading/);
+await as(ATTENDANT, () => q(`delete from shifts where id = $1`, [S4]));
+await as(ATTENDANT, () => q(`delete from pump_readings where shift_id = $1 and pump_number = 'P2'`, [S3]));
+check("deleting the newest readings rolls P2 back to 5300 and tank 1 to 8950",
+  num((await one(`select current_meter from pumps where pump_number = 'P2'`)).current_meter) === 5300 &&
+  num((await one(`select current_volume from tanks where id = $1`, [T1])).current_volume) === 8950);
+
 console.log("\n== bar");
 const ITEM = (await as(MANAGER, () => one(`insert into bar_inventory (item_name, sku, quantity_in_stock, cost_price, selling_price, reorder_threshold)
   values ('Star beer, 60 cl', 'BEER-STAR-60CL', 20, 50, 75, 5) returning id`))).id;
-await as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity, unit_price, sale_date) values ($1, 3, 1, $2)`, [ITEM, D1]));
+await as(MANAGER, () => q(`insert into bar_sales (item_id, quantity, sale_date) values ($1, 3, $2)`, [ITEM, D1]));
 let item = await one(`select quantity_in_stock from bar_inventory where id = $1`, [ITEM]);
 const sale = await one(`select unit_price, total_amount, recorded_by from bar_sales where item_id = $1`, [ITEM]);
-check("sale at menu price 75, stock 17", num(sale.unit_price) === 75 && num(sale.total_amount) === 225 && item.quantity_in_stock === 17 && sale.recorded_by === ATTENDANT, { sale, item });
+check("sale at menu price 75, stock 17", num(sale.unit_price) === 75 && num(sale.total_amount) === 225 && item.quantity_in_stock === 17 && sale.recorded_by === MANAGER, { sale, item });
+await expectError("attendant cannot backdate a bar sale", () =>
+  as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity, sale_date) values ($1, 1, $2)`, [ITEM, D1])), /only record bar sales for today/);
+const ownSale = await as(ATTENDANT, () => one(`insert into bar_sales (item_id, quantity, unit_price) values ($1, 1, 1) returning id, unit_price, recorded_by`, [ITEM]));
+check("attendant sells today, at the menu price rather than their own", num(ownSale.unit_price) === 75 && ownSale.recorded_by === ATTENDANT, ownSale);
+await as(MANAGER, () => q(`delete from bar_sales where id = $1`, [ownSale.id]));
 await expectError("cannot oversell", () =>
   as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity) values ($1, 50)`, [ITEM])), /left in stock/);
 await as(MANAGER, () => q(`insert into bar_restocks (item_id, quantity, unit_cost, restock_date) values ($1, 10, 56, $2)`, [ITEM, D1]));
@@ -283,6 +341,22 @@ await expectError("unbalanced journal rejected at commit", () =>
      insert into journal_lines (entry_id, account_code, debit) select id, '1000', 10 from e`), /unbalanced/);
 await expectError("internal posting function not callable by users", () =>
   as(MANAGER, () => q(`select post_journal(current_date, 'x', 'TRANSACTION', null, '[]'::jsonb)`)), /permission denied/);
+
+console.log("\n== fraud controls");
+await expectError("attendant cannot backdate a shift", () =>
+  as(ATTENDANT, () => q(`insert into shifts (shift_date, shift_label, attendant_id) values ($1, 'Morning', $2)`, [D1, ATTENDANT])), /only record shifts for today/);
+const todayShift = await as(ATTENDANT, () => one(`insert into shifts (shift_label, attendant_id) values ('Morning', $1) returning id`, [ATTENDANT]));
+check("attendant opens today's shift", !!todayShift?.id);
+await as(ATTENDANT, () => q(`delete from shifts where id = $1`, [todayShift.id]));
+await expectError("attendant cannot record a closing dip", () =>
+  as(ATTENDANT, () => q(`insert into tank_dips (tank_id, dip_type, volume_liters) values ($1, 'CLOSING', 3600)`, [T2])), /manager records them/);
+await expectError("attendant cannot backdate a dip", () =>
+  as(ATTENDANT, () => q(`insert into tank_dips (tank_id, dip_date, dip_type, volume_liters) values ($1, '2026-09-20', 'OPENING', 3600)`, [T2])), /only record dips for today/);
+await expectError("manager cannot raise the shortage tolerance", () =>
+  as(MANAGER, () => q(`update station_settings set shortage_tolerance = 1000`)), /Only the owner/);
+await as(OWNER, () => q(`update station_settings set shortage_tolerance = 1000`));
+await as(OWNER, () => q(`update station_settings set shortage_tolerance = 0`));
+check("owner can change the tolerance", num((await one(`select shortage_tolerance from station_settings`)).shortage_tolerance) === 0);
 
 console.log("\n== profit engine");
 const pnl = await as(MANAGER, () => q(`select * from get_profit_and_loss('2026-10-01', '2026-10-01')`));
@@ -325,6 +399,36 @@ const ago2 = await one(`select avg_cost_per_liter from fuel_products where code 
 check("deleting the delivery restores volume 3600 and WAC ≈ 27", num((await one(`select current_volume from tanks where id = $1`, [T2])).current_volume) === 3600 && Math.abs(num(ago2.avg_cost_per_liter) - 27) < 0.01, ago2);
 await expectError("submitted/reconciled shifts cannot be deleted", () =>
   as(MANAGER, () => q(`delete from shifts where id = $1`, [S1])), /Only open shifts/);
+
+console.log("\n== meter corrections");
+await expectError("the owner must give a reason", () =>
+  as(OWNER, () => q(`select set_pump_meter(id, 2000) from pumps where pump_number = 'P1'`)), /reason/);
+await as(OWNER, () => q(`select set_pump_meter(id, 2000, 'Meter replaced') from pumps where pump_number = 'P1'`));
+const corr = await one(`select old_meter, new_meter, reason, during_setup, corrected_by from meter_corrections where pump_number = 'P1'`);
+check("owner corrects a used pump's meter with a reason, logged",
+  num(corr.old_meter) === 1600 && num(corr.new_meter) === 2000 && corr.reason === "Meter replaced" && corr.during_setup === false && corr.corrected_by === OWNER, corr);
+const S5 = (await as(MANAGER, () => one(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-10-03', 'Morning', $1) returning id`, [ATTENDANT]))).id;
+await as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, closing_meter) values ($1, 'P1', 2050)`, [S5]));
+check("the next reading opens at the corrected meter",
+  num((await one(`select opening_meter from pump_readings where shift_id = $1`, [S5])).opening_meter) === 2000);
+await as(ATTENDANT, () => q(`delete from shifts where id = $1`, [S5]));
+
+console.log("\n== audit log");
+check("only the owner can read the audit log",
+  (await as(MANAGER, () => q(`select id from audit_log`))).length === 0 && (await as(OWNER, () => q(`select id from audit_log`))).length > 0);
+const saleDelete = await one(`select actor_id, actor_name, old_data from audit_log where table_name = 'bar_sales' and action = 'DELETE' order by id limit 1`);
+check("deleting a bar sale is logged with who did it",
+  saleDelete?.actor_id === MANAGER && saleDelete.actor_name === "Mary Manager" && num(saleDelete.old_data.quantity) === 1, saleDelete);
+const readingEdit = await one(`select actor_id, old_data, new_data from audit_log where table_name = 'pump_readings' and action = 'UPDATE' order by id limit 1`);
+check("an edited reading logs what changed, before and after",
+  readingEdit?.actor_id === ATTENDANT && num(readingEdit.old_data.closing_meter) === 1500 && num(readingEdit.new_data.closing_meter) === 1600 &&
+  !("opening_meter" in readingEdit.new_data), readingEdit);
+check("setting a tank's stock is logged", !!(await one(`select id from audit_log where table_name = 'tanks' and action = 'STOCK_SET'`)));
+check("routine stock and meter moves are not logged (only the pump rename and tank fuel change)",
+  (await one(`select count(*)::int c from audit_log where table_name in ('tanks', 'pumps') and action = 'UPDATE'`)).c === 2);
+await expectError("nobody can write to the audit log", () =>
+  as(OWNER, () => q(`insert into audit_log (table_name, action) values ('x', 'y')`)), /permission denied/);
+await expectError("…or erase it", () => as(OWNER, () => q(`delete from audit_log`)), /permission denied/);
 
 const finalTb = await as(MANAGER, () => q(`select * from get_trial_balance('2026-12-31')`));
 const fdr = finalTb.reduce((a, r) => a + num(r.total_debit), 0), fcr = finalTb.reduce((a, r) => a + num(r.total_credit), 0);

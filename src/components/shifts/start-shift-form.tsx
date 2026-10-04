@@ -2,7 +2,7 @@ import { startShift } from "@/app/(app)/shifts/actions";
 import { ActionForm, SubmitButton } from "@/components/ui/action-form";
 import { Field } from "@/components/ui/field";
 import { inputClass } from "@/components/ui/styles";
-import { todayISO } from "@/lib/format";
+import { attendantDateLimits, todayISO } from "@/lib/format";
 import type { Profile } from "@/lib/types";
 
 /** Opens a shift. Managers can open one for any attendant; attendants open their own. */
@@ -10,7 +10,16 @@ export function StartShiftForm({ staff, currentUserId }: { staff?: Profile[]; cu
   return (
     <ActionForm action={startShift} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
       <Field label="Date" htmlFor="shift_date">
-        <input id="shift_date" name="shift_date" type="date" defaultValue={todayISO()} required className={inputClass} />
+        <input
+          id="shift_date"
+          name="shift_date"
+          type="date"
+          defaultValue={todayISO()}
+          required
+          // Only managers (who get the staff list) may open shifts on other days.
+          {...(staff ? {} : attendantDateLimits())}
+          className={inputClass}
+        />
       </Field>
       <Field label="Shift" htmlFor="shift_label">
         <select id="shift_label" name="shift_label" defaultValue="Morning" className={inputClass}>
