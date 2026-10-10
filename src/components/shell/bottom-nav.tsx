@@ -3,11 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import type { Role } from "@/lib/types";
-import { isActive, linksForRole } from "./nav-links";
+import { isActive, linksFor, type NavContext } from "./nav-links";
 
 /** Thumb-reachable navigation for phones. */
-export function BottomNav({ role }: { role: Role }) {
+export function BottomNav({ nav }: { nav: NavContext }) {
   const pathname = usePathname();
 
   return (
@@ -15,7 +14,7 @@ export function BottomNav({ role }: { role: Role }) {
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 flex border-t border-zinc-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/95 md:hidden"
     >
-      {linksForRole(role).map(({ href, label, icon: Icon }) => {
+      {linksFor(nav).map(({ href, label, icon: Icon }) => {
         const active = isActive(href, pathname);
         return (
           <Link

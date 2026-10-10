@@ -5,25 +5,29 @@ import { numClass, tableClass, tdClass, thClass } from "@/components/ui/styles";
 import { getStationSettings, requireOwner } from "@/lib/auth";
 import { rows } from "@/lib/data";
 import { addDaysISO, formatDateTime, formatMoney, formatNumber, todayISO } from "@/lib/format";
+import { barWords } from "@/lib/station";
 import type { AuditEntry, MeterCorrection, Profile, ShiftSummary } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Activity" };
 
-const RECORD_LABELS: Record<string, string> = {
-  tanks: "tank",
-  pumps: "pump",
-  fuel_products: "fuel price",
-  station_settings: "station settings",
-  profiles: "staff member",
-  shifts: "shift",
-  pump_readings: "meter reading",
-  tank_dips: "dip",
-  fuel_deliveries: "fuel delivery",
-  bar_inventory: "bar drink",
-  bar_sales: "bar sale",
-  bar_restocks: "bar restock",
-  financial_transactions: "cash book entry",
-};
+function recordLabels(bar: ReturnType<typeof barWords>): Record<string, string> {
+  return {
+    tanks: "tank",
+    pumps: "pump",
+    fuel_products: "fuel price",
+    station_settings: "station settings",
+    profiles: "staff member",
+    shifts: "shift",
+    pump_readings: "meter reading",
+    tank_dips: "dip",
+    fuel_deliveries: "fuel delivery",
+    bar_inventory: `${bar.name} ${bar.item}`,
+    bar_sales: `${bar.name} sale`,
+    bar_restocks: `${bar.name} restock`,
+    financial_transactions: "cash book entry",
+    transaction_categories: "cash-book category",
+  };
+}
 
 const ACTIONS: Record<AuditEntry["action"], { label: string; tone: Tone }> = {
   INSERT: { label: "Added", tone: "neutral" },
@@ -51,6 +55,7 @@ const HIDDEN_FIELDS = new Set([
 function show(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") return formatNumber(value, 2);
+  if (Array.isArray(value)) return value.join(", ");
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
@@ -75,6 +80,7 @@ export default async function ActivityPage() {
   const { supabase } = await requireOwner();
   const settings = await getStationSettings();
   const currency = settings.currency_code;
+  const recordLabel = recordLabels(barWords(settings));
 
   const [shiftsResult, correctionsResult, auditResult, staffResult] = await Promise.all([
     supabase.from("v_shift_summary").select("*").gte("shift_date", addDaysISO(todayISO(), -29)).neq("status", "OPEN"),
@@ -207,7 +213,7 @@ export default async function ActivityPage() {
                         <td className={tdClass}>{entry.actor_name ?? "System"}</td>
                         <td className={`${tdClass} whitespace-nowrap`}>
                           <StatusBadge tone={action.tone}>
-                            {action.label} {RECORD_LABELS[entry.table_name] ?? entry.table_name}
+                            {action.label} {recordLabel[entry.table_name] ?? entry.table_name}
                           </StatusBadge>
                         </td>
                         <td className={`${tdClass} min-w-64 whitespace-normal text-xs text-zinc-600 dark:text-zinc-300`}>

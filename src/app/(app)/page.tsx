@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Banknote, Droplets, Fuel, TrendingUp } from "lucide-react";
+import { Banknote, Droplets, Fuel, Store, TrendingUp } from "lucide-react";
 import { BarChart } from "@/components/charts/bar-chart";
 import { RealtimeRefresh } from "@/components/dashboard/realtime-refresh";
 import { TankMeter } from "@/components/dashboard/tank-meter";
@@ -9,7 +9,7 @@ import { Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
 import { StatusBadge, stockStatusBadge } from "@/components/ui/status-badge";
 import { buttonSecondary, inputClass, numClass } from "@/components/ui/styles";
-import { getStationSettings, isManager, requireStaff } from "@/lib/auth";
+import { accessFor, getStationSettings, isManager, requireStaff } from "@/lib/auth";
 import { row, rows } from "@/lib/data";
 import {
   addDaysISO,
@@ -20,6 +20,7 @@ import {
   isISODate,
   todayISO,
 } from "@/lib/format";
+import { barWords } from "@/lib/station";
 import type {
   BarStock,
   DashboardKpis,
@@ -49,31 +50,38 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
   const { date: dateParam } = await searchParams;
   const date = isISODate(dateParam) ? dateParam : todayISO();
   const currency = settings.currency_code;
+  // Costs and profit only for those the owner lets see the accounts.
+  const { finances } = accessFor(profile.role, settings);
+  const bar = barWords(settings);
 
   const [kpiResult, tanksResult, shiftsResult, trendResult, lowStockResult] = await Promise.all([
     supabase.rpc("get_dashboard_kpis", { p_date: date }),
     supabase.from("v_tank_status").select("*").eq("is_active", true).order("tank_name"),
     supabase.from("v_shift_summary").select("*").eq("shift_date", date).order("opened_at"),
     supabase.rpc("get_daily_trend", { p_from: addDaysISO(date, -13), p_to: date }),
-    supabase
-      .from("v_bar_stock")
-      .select("*")
-      .eq("is_active", true)
-      .neq("stock_status", "OK")
-      .order("quantity_in_stock")
-      .limit(8),
+    settings.bar_enabled
+      ? supabase
+          .from("v_bar_stock")
+          .select("*")
+          .eq("is_active", true)
+          .neq("stock_status", "OK")
+          .order("quantity_in_stock")
+          .limit(8)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   const k = row<DashboardKpis>(kpiResult, "dashboard figures")!;
   const tanks = rows<TankStatus>(tanksResult, "tanks");
   const shifts = rows<ShiftSummary>(shiftsResult, "shifts");
   const trend = rows<TrendRow>(trendResult, "sales trend");
-  const lowStock = rows<BarStock>(lowStockResult, "bar stock");
+  const lowStock = rows<BarStock>(lowStockResult, `${bar.name} stock`);
 
   const handover = k.handover;
   const tolerance = Number(settings.shortage_tolerance);
   const isToday = date === todayISO();
   const trendTotal = trend.reduce((sum, d) => sum + Number(d.fuel_sales) + Number(d.bar_sales), 0);
+  // The bar's figures show while it is on, or when it sold something that day.
+  const showBar = settings.bar_enabled || Number(k.bar_sales) !== 0;
 
   return (
     <>
@@ -138,20 +146,33 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
               )
             }
           />
-          <StatTile
-            label="Gross / net earnings"
-            icon={TrendingUp}
-            value={formatMoney(k.gross_profit, currency)}
-            detail={
-              <>
-                Net{" "}
-                <span className="font-semibold text-zinc-900 dark:text-zinc-50">
-                  {formatSignedMoney(k.net_profit, currency)}
-                </span>{" "}
-                after expenses &amp; cash differences
-              </>
-            }
-          />
+          {finances ? (
+            <StatTile
+              label="Gross / net earnings"
+              icon={TrendingUp}
+              value={formatMoney(k.gross_profit, currency)}
+              detail={
+                <>
+                  Net{" "}
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                    {formatSignedMoney(k.net_profit, currency)}
+                  </span>{" "}
+                  after expenses &amp; cash differences
+                </>
+              }
+            />
+          ) : (
+            <StatTile
+              label="Sales"
+              icon={showBar ? Store : TrendingUp}
+              value={formatMoney(Number(k.fuel_sales) + Number(k.bar_sales), currency)}
+              detail={
+                showBar
+                  ? `Fuel ${formatMoney(k.fuel_sales, currency)} · ${bar.name} ${formatMoney(k.bar_sales, currency)}`
+                  : "Fuel at pump prices, from the meters"
+              }
+            />
+          )}
           <StatTile
             label="Tank status"
             icon={Fuel}
@@ -173,7 +194,7 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
           <Card
             className="lg:col-span-2"
             title="Sales, last 14 days"
-            description={`Fuel and bar sales per day · ${formatMoney(trendTotal, currency)} in total`}
+            description={`${showBar ? `Fuel and ${bar.name} sales` : "Fuel sales"} per day · ${formatMoney(trendTotal, currency)} in total`}
           >
             <BarChart
               title="Daily sales, last 14 days"
@@ -190,16 +211,25 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
           <Card title="How the day adds up" description="Live: includes shifts that are still open.">
             <dl className="flex flex-col gap-2 text-sm">
               <Line label="Fuel sales" value={formatMoney(k.fuel_sales, currency)} />
-              <Line label="Bar sales" value={formatMoney(k.bar_sales, currency)} />
-              <Line label="Cost of goods sold" value={formatMoney(-(Number(k.fuel_cogs) + Number(k.bar_cogs)), currency)} />
-              {Number(k.stock_loss) !== 0 && (
-                <Line label="Dip variance (stock loss)" value={formatMoney(-k.stock_loss, currency)} />
+              {showBar && <Line label={`${bar.name} sales`} value={formatMoney(k.bar_sales, currency)} />}
+              {finances ? (
+                <>
+                  <Line label="Cost of goods sold" value={formatMoney(-(Number(k.fuel_cogs) + Number(k.bar_cogs)), currency)} />
+                  {Number(k.stock_loss) !== 0 && (
+                    <Line label="Dip variance (stock loss)" value={formatMoney(-Number(k.stock_loss), currency)} />
+                  )}
+                  <Line label="Gross profit" value={formatMoney(k.gross_profit, currency)} strong />
+                  <Line label="Operating expenses" value={formatMoney(-Number(k.operating_expenses), currency)} />
+                  {Number(k.other_income) !== 0 && <Line label="Other income" value={formatMoney(k.other_income, currency)} />}
+                  <Line label="Cash shortages / overages" value={formatSignedMoney(k.cash_variance, currency)} />
+                  <Line label="Net profit" value={formatSignedMoney(k.net_profit, currency)} strong />
+                </>
+              ) : (
+                <>
+                  <Line label="Total sales" value={formatMoney(Number(k.fuel_sales) + Number(k.bar_sales), currency)} strong />
+                  <Line label="Cash shortages / overages" value={formatSignedMoney(k.cash_variance, currency)} />
+                </>
               )}
-              <Line label="Gross profit" value={formatMoney(k.gross_profit, currency)} strong />
-              <Line label="Operating expenses" value={formatMoney(-k.operating_expenses, currency)} />
-              {Number(k.other_income) !== 0 && <Line label="Other income" value={formatMoney(k.other_income, currency)} />}
-              <Line label="Cash shortages / overages" value={formatSignedMoney(k.cash_variance, currency)} />
-              <Line label="Net profit" value={formatSignedMoney(k.net_profit, currency)} strong />
             </dl>
           </Card>
         </div>
@@ -239,10 +269,10 @@ export default async function DashboardPage({ searchParams }: PageProps<"/">) {
 
         {lowStock.length > 0 && (
           <Card
-            title="Bar items to reorder"
+            title={`${bar.Items} to reorder`}
             actions={
               <Link href="/bar" className={buttonSecondary}>
-                Bar
+                {bar.name}
               </Link>
             }
           >
@@ -319,7 +349,7 @@ async function AttendantHome({ profile, settings }: { profile: Profile; settings
                 >
                   <span>
                     <span className="block text-sm font-medium text-zinc-900 dark:text-zinc-50">
-                      {s.shift_label === "Day" ? "Full day" : s.shift_label} · {formatDate(s.shift_date)}
+                      {s.shift_label} · {formatDate(s.shift_date)}
                     </span>
                     <span className="text-xs text-zinc-500 dark:text-zinc-400">
                       {s.reading_count} reading{s.reading_count === 1 ? "" : "s"} ·{" "}
@@ -331,9 +361,19 @@ async function AttendantHome({ profile, settings }: { profile: Profile; settings
               ))}
             </div>
           </Card>
-        ) : (
+        ) : settings.attendants_open_shifts ? (
           <Card title="Start your shift">
-            <StartShiftForm currentUserId={profile.id} />
+            <StartShiftForm
+              currentUserId={profile.id}
+              shiftNames={settings.shift_names}
+              dateWindowDays={settings.attendant_date_window_days}
+            />
+          </Card>
+        ) : (
+          <Card title="Your shift">
+            <p className="text-sm text-zinc-600 dark:text-zinc-300">
+              A manager opens your shift. It appears here as soon as it is open.
+            </p>
           </Card>
         )}
 

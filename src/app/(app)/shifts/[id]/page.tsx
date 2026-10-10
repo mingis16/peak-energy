@@ -12,7 +12,7 @@ import { Card, EmptyState, PageHeader } from "@/components/ui/card";
 import { StatTile } from "@/components/ui/stat-tile";
 import { shiftStatusBadge } from "@/components/ui/status-badge";
 import { buttonDanger, buttonSecondary, buttonSmall } from "@/components/ui/styles";
-import { getStationSettings, isManager, requireStaff } from "@/lib/auth";
+import { accessFor, getStationSettings, isManager, requireStaff } from "@/lib/auth";
 import { row, rows } from "@/lib/data";
 import { formatDate, formatDateTime, formatLiters, formatMoney } from "@/lib/format";
 import type { FuelProduct, PumpReading, ShiftSummary } from "@/lib/types";
@@ -33,6 +33,12 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
   const settings = await getStationSettings();
   const currency = settings.currency_code;
   const manager = isManager(profile.role);
+  const finances = accessFor(profile.role, settings).finances;
+  const payments = {
+    credit: settings.accepts_customer_credit,
+    digital: settings.accepts_digital_payments,
+    digitalLabel: settings.digital_payments_label,
+  };
 
   const [shiftResult, readingsResult, pumpsResult, productsResult] = await Promise.all([
     supabase.from("v_shift_summary").select("*").eq("id", id).maybeSingle(),
@@ -72,7 +78,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
     });
 
   const zeroPrices = editable && readingRows.some((r) => r.price === 0);
-  const shiftName = shift.shift_label === "Day" ? "Full-day shift" : `${shift.shift_label} shift`;
+  const shiftName = `${shift.shift_label} shift`;
 
   return (
     <>
@@ -106,7 +112,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
           <StatTile
             label="Collected"
             value={shift.status === "OPEN" && !shift.total_collected ? "—" : formatMoney(shift.total_collected, currency)}
-            detail="Cash + credit + transfers"
+            detail="Everything declared at handover"
           />
           <StatTile
             label="Difference"
@@ -172,14 +178,19 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
               expectedSales={Number(shift.expected_sales)}
               currency={currency}
               tolerance={Number(settings.shortage_tolerance)}
+              payments={payments}
               mode={shift.status === "OPEN" ? "attendant" : "correction"}
               action={saveHandover.bind(null, shift.id)}
             />
           ) : (
             <dl className="grid gap-4 text-sm sm:grid-cols-3">
               <Amount label="Cash on hand" value={formatMoney(shift.cash_on_hand, currency)} />
-              <Amount label="Credit slips" value={formatMoney(shift.credit_slips_amount, currency)} />
-              <Amount label="Bank / mobile money" value={formatMoney(shift.digital_transfers_amount, currency)} />
+              {(payments.credit || Number(shift.credit_slips_amount) !== 0) && (
+                <Amount label="Credit slips" value={formatMoney(shift.credit_slips_amount, currency)} />
+              )}
+              {(payments.digital || Number(shift.digital_transfers_amount) !== 0) && (
+                <Amount label={payments.digitalLabel} value={formatMoney(shift.digital_transfers_amount, currency)} />
+              )}
               {shift.notes && (
                 <div className="sm:col-span-3">
                   <dt className="text-zinc-500 dark:text-zinc-400">Notes</dt>
@@ -217,9 +228,11 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
                   </>
                 ) : (
                   <>
-                    <Link href={`/accounting?tab=ledger&entry=${shift.journal_entry_id}`} className={buttonSecondary}>
-                      <BookOpenCheck className="h-4 w-4" /> View ledger entry
-                    </Link>
+                    {finances && (
+                      <Link href={`/accounting?tab=ledger&entry=${shift.journal_entry_id}`} className={buttonSecondary}>
+                        <BookOpenCheck className="h-4 w-4" /> View ledger entry
+                      </Link>
+                    )}
                     <SubmitButton
                       name="intent"
                       value="reopen"

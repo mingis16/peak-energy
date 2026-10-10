@@ -4,7 +4,6 @@
 export type Role = "owner" | "manager" | "attendant" | "pending";
 export type PaymentMethod = "CASH" | "BANK" | "CREDIT";
 export type ShiftStatus = "OPEN" | "SUBMITTED" | "RECONCILED";
-export type ShiftLabel = "Morning" | "Afternoon" | "Night" | "Day";
 export type StockStatus = "OK" | "LOW" | "CRITICAL" | "OUT";
 
 export interface Profile {
@@ -20,6 +19,23 @@ export interface StationSettings {
   currency_code: string;
   shortage_tolerance: number;
   dip_variance_tolerance_percent: number;
+  /** Null until the owner has answered the setup questions. */
+  setup_completed_at: string | null;
+  shift_names: string[];
+  attendants_open_shifts: boolean;
+  accepts_customer_credit: boolean;
+  accepts_digital_payments: boolean;
+  digital_payments_label: string;
+  /** The bar module: whatever the station sells besides fuel. */
+  bar_enabled: boolean;
+  bar_name: string;
+  /** One thing sold, singular and lower case, e.g. "drink". */
+  bar_item_label: string;
+  bar_categories: string[];
+  attendant_date_window_days: number;
+  attendants_record_closing_dips: boolean;
+  managers_view_finances: boolean;
+  managers_use_cash_book: boolean;
 }
 
 export interface FuelProduct {
@@ -59,7 +75,7 @@ export interface Pump {
 export interface ShiftSummary {
   id: string;
   shift_date: string;
-  shift_label: ShiftLabel;
+  shift_label: string;
   attendant_id: string;
   attendant_name: string;
   status: ShiftStatus;
@@ -174,6 +190,13 @@ export interface BarRestock {
   created_at: string;
 }
 
+export interface Account {
+  code: string;
+  name: string;
+  account_type: "ASSET" | "LIABILITY" | "EQUITY" | "INCOME" | "EXPENSE";
+  report_group: "REVENUE" | "COGS" | "OPEX" | "OTHER_INCOME" | null;
+}
+
 export interface TransactionCategory {
   name: string;
   transaction_type: "INCOME" | "EXPENSE";
@@ -227,20 +250,21 @@ export interface TrialBalanceRow {
   balance: number;
 }
 
+/** Cost and profit figures are null for anyone who may not see the accounts. */
 export interface DashboardKpis {
   date: string;
   fuel_liters: number;
   fuel_sales: number;
-  fuel_cogs: number;
+  fuel_cogs: number | null;
   fuel_by_type: { fuel_type: string; liters: number; sales: number }[];
   bar_sales: number;
-  bar_cogs: number;
-  stock_loss: number;
-  gross_profit: number;
-  operating_expenses: number;
-  other_income: number;
+  bar_cogs: number | null;
+  stock_loss: number | null;
+  gross_profit: number | null;
+  operating_expenses: number | null;
+  other_income: number | null;
   cash_variance: number;
-  net_profit: number;
+  net_profit: number | null;
   handover: {
     shifts: number;
     collected: number;
@@ -262,7 +286,7 @@ export interface TrendRow {
   fuel_liters: number;
   fuel_sales: number;
   bar_sales: number;
-  gross_profit: number;
+  gross_profit: number | null;
 }
 
 export interface AuditEntry {

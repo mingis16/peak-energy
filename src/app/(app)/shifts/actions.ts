@@ -5,18 +5,16 @@ import {
   ActionError,
   authorize,
   check,
-  readChoice,
   readDate,
   readNumber,
   readOptionalText,
+  readText,
   runAction,
   type ActionState,
 } from "@/lib/actions";
 import { isManager, MANAGER_ROLES, STAFF_ROLES } from "@/lib/auth";
 import { formatMoney } from "@/lib/format";
 import type { ShiftStatus } from "@/lib/types";
-
-const SHIFT_LABELS = ["Morning", "Afternoon", "Night", "Day"] as const;
 
 export async function startShift(_prev: ActionState, form: FormData): Promise<ActionState> {
   let shiftId = "";
@@ -29,7 +27,8 @@ export async function startShift(_prev: ActionState, form: FormData): Promise<Ac
       .from("shifts")
       .insert({
         shift_date: readDate(form, "shift_date"),
-        shift_label: readChoice(form, "shift_label", SHIFT_LABELS, "Shift"),
+        // The database checks it is one of the station's shifts.
+        shift_label: readText(form, "shift_label", "Shift"),
         attendant_id: attendantId,
       })
       .select("id")
@@ -125,12 +124,15 @@ export async function saveHandover(shiftId: string, _prev: ActionState, form: Fo
     const { supabase } = await authorize(STAFF_ROLES);
     const submit = form.get("intent") === "submit";
 
+    // Payments the station does not take are left off the form, and stay as they are.
     const update: Record<string, unknown> = {
       cash_on_hand: readNumber(form, "cash_on_hand", "Cash on hand"),
-      credit_slips_amount: readNumber(form, "credit_slips_amount", "Credit slips"),
-      digital_transfers_amount: readNumber(form, "digital_transfers_amount", "Digital transfers"),
       notes: readOptionalText(form, "notes"),
     };
+    if (form.has("credit_slips_amount")) update.credit_slips_amount = readNumber(form, "credit_slips_amount", "Credit slips");
+    if (form.has("digital_transfers_amount")) {
+      update.digital_transfers_amount = readNumber(form, "digital_transfers_amount", "Bank / mobile money");
+    }
     if (submit) update.status = "SUBMITTED";
 
     const { data, error } = await supabase

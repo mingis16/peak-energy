@@ -9,36 +9,62 @@ Petrol station management and accounting: wet and dry stock, pump meter sales, s
 | Module | Where | Highlights |
 |---|---|---|
 | Inventory & tanks | `/tanks`, `/settings` | Tank levels against reorder thresholds and days of cover; opening and closing dips; deliveries with transit-loss tracking; a daily wet-stock reconciliation (opening + deliveries − meter sales vs closing dip) |
-| Bar | `/bar` | The club bar: add your own drinks, opening counts and restocks at weighted-average cost, sales at menu price, low-stock flags |
-| Shifts | `/shifts` | Attendants log closing meters per pump; each opening meter is where the pump last closed. The handover (cash, credit slips, bank/mobile money) is compared with meter sales and any shortage is flagged immediately. A manager approves the shift to post it to the ledger |
+| Besides fuel | `/bar` | Whatever else the station sells (a bar, a shop, lubricants), under the name the owner gives it: items, opening counts and restocks at weighted-average cost, sales at the set price, low-stock flags. Can be switched off |
+| Shifts | `/shifts` | The station's own shifts (Day/Night, Morning/Afternoon/Night…). Attendants log closing meters per pump; each opening meter is where the pump last closed. The handover (cash, plus credit slips and bank/mobile money where the station takes them) is compared with meter sales and any shortage is flagged immediately. A manager approves the shift to post it to the ledger |
 | Accounting | `/accounting` | Profit & loss (gross and net), a cash book for expenses and other money in or out, the general ledger, and a trial balance |
 | Dashboard | `/` | Live KPIs: volume sold, cash collected vs expected, gross/net earnings, tank status, 14-day sales chart. Updates through Supabase Realtime |
 | Activity | `/activity` | Owner only: cash shortages by attendant, every pump meter correction, and a log of edits and deletions with who made them |
+| Setup | `/setup` | The questions a new owner answers on first sign-in, so the app fits how the station runs |
+| Settings | `/settings` | Every answer, editable later: station, controls, fuels and equipment, shifts and payments, what is sold besides fuel, cash-book categories, staff and who sees what |
 
-### Roles
+### Setting up a station
 
-The first account to sign up becomes the **owner**. Everyone after that starts as **pending** and sees nothing until the owner assigns a role in Settings → Staff.
+The first account to sign up becomes the **owner**, and is taken through a few questions before anything else:
 
-| Role | Can |
-|---|---|
-| Owner | Everything, including staff roles, shortage and dip tolerances, meter corrections on pumps in use, and the activity log |
-| Manager | Prices, tanks, pumps, deliveries, closing dips, shift approval, accounts |
-| Attendant | Their own shifts and meter readings, opening dips and bar sales, dated today (or a day either side) |
+1. **Your station**: name and currency.
+2. **Fuels and prices**: which fuels are sold, pump price and cost per litre.
+3. **Tanks**: each tank's fuel, capacity, today's dipped stock and reorder level.
+4. **Pumps**: each nozzle, its tank and its meter reading now.
+5. **Shifts**: one a day, day and night, three shifts, or the station's own names.
+6. **Payments**: whether customers pay by bank/mobile money (and what the station calls it, e.g. "Orange Money") and whether they buy on credit. Handover forms show only these.
+7. **Besides fuel**: a bar, a shop, lubricants or nothing; its name, what one thing sold is called, and its categories. The menu, pages and ledger use these words.
+8. **Controls**: who opens shifts, who records closing dips, how far from today attendants may date records, and the shortage and dip tolerances.
+9. **Who sees what**: whether managers may use the cash book and see the accounts.
+10. **Your team**: add managers and attendants.
 
-Every permission is enforced in Postgres with row-level security, so the UI cannot be bypassed through the API.
+Any step can be skipped, and every answer can be changed later in Settings, which the owner can also use to run through the questions again. A station that was already in use when this arrived keeps working as a club bar and is not asked the questions.
+
+### Roles and who sees what
+
+| | Owner | Manager | Attendant |
+|---|---|---|---|
+| Shifts and meter readings | ✓ | ✓, and approves them | Their own |
+| Tank levels and opening dips | ✓ | ✓ | ✓ |
+| Closing dips and deliveries | ✓ | ✓ | Closing dips, if the owner allows |
+| Sales besides fuel | ✓ | ✓, with stock and prices | Sales |
+| Fuel prices, tanks and pumps | ✓ | ✓ | — |
+| Cash book | ✓ | If the owner allows | — |
+| Accounts: profit & loss, ledger, balances, and costs and profit on the dashboard | ✓ | If the owner allows | — |
+| Staff, station settings, meter corrections, activity log | ✓ | — | — |
+
+Managers cannot see the cash book or the accounts until the owner allows it (Settings → Staff & access). Every permission is enforced in Postgres with row-level security, so the UI cannot be bypassed through the API: a manager without access gets no ledger rows, no cash-book rows, and no cost or profit figures from the dashboard functions.
+
+### Staff
+
+The owner adds members in Settings → Staff & access with a name, a login email, a password and a role, and the member can sign in straight away. No email is sent, so any address works as a login. The owner can also set a new password for a member who forgets theirs, or set someone who has left to **No access**. Adding members and setting passwords use Supabase's admin API, so they need `SUPABASE_SERVICE_ROLE_KEY` on the server (see Environment). Without it, staff sign up themselves, start with no access, and wait for the owner to give them a role.
 
 ### Equipment setup
 
-Until a tank has its first reading, dip or delivery, a manager can set its fuel and the stock in it (Settings → Tanks); the opening stock is revalued to match. Until a pump has its first reading, its number, tank and meter can be set. Unused tanks and pumps can be removed. After that, stock changes only through readings, dips and deliveries.
+Until a tank has its first reading, dip or delivery, a manager can set its fuel and the stock in it (Settings → Fuel & equipment); the opening stock is revalued to match. Until a pump has its first reading, its number, tank and meter can be set. Unused tanks and pumps can be removed. After that, stock changes only through readings, dips and deliveries.
 
 ### Fraud controls
 
 - **Meter chain.** Every reading opens where the pump's last reading closed; nobody types an opening meter. A reading can no longer change once a later one builds on it, so litres cannot go missing between shifts.
 - **Meter corrections.** Once a pump is in use, only the owner can change its meter, with a reason (meter replaced, repaired). Every change is listed under Activity.
-- **No backdating.** Attendants can only date shifts, bar sales and dips today, or a day either side for night shifts. Managers can record earlier days.
-- **Separation of duties.** Closing dips, which reset stock and reveal losses, are recorded by a manager, not by the attendants who sold the fuel.
-- **Tolerances.** Only the owner can change the shortage and dip tolerances, since raising them hides shortages.
-- **Audit log.** Edits and deletions of readings, shifts, sales, deliveries, dips, prices, equipment, settings, roles and cash-book entries are logged with who made them and what changed. The log is written by database triggers and cannot be edited or deleted by anyone through the app.
+- **No backdating.** Attendants can only date shifts, sales and dips today, or within the leeway the owner sets (a day either side by default, for night shifts). Managers can record earlier days.
+- **Separation of duties.** Closing dips, which reset stock and reveal losses, are recorded by a manager, not by the attendants who sold the fuel, unless the owner allows it (a small station with one person on duty).
+- **Owner's settings.** Only the owner changes the station's settings: tolerances, controls, shifts, payments, access and staff, since loosening them can hide shortages.
+- **Audit log.** Edits and deletions of readings, shifts, sales, deliveries, dips, prices, equipment, settings, roles, cash-book entries and categories are logged with who made them and what changed. The log is written by database triggers and cannot be edited or deleted by anyone through the app.
 
 ## How the books are kept
 
@@ -50,11 +76,13 @@ Each operational record posts its own balanced journal entry through database tr
 | Shift approved | Cash, Bank, Receivables (credit slips), Cash Shortages | Fuel Sales, Cash Overages |
 | …and its cost | Cost of Fuel Sold | Fuel Inventory |
 | Closing dip below book | Fuel Stock Losses | Fuel Inventory (reversed for a gain) |
-| Bar sale | Cash/Bank/Receivables, Cost of Bar Sales | Bar Sales, Bar Inventory |
+| Sale besides fuel | Cash/Bank/Receivables, Cost of Bar Sales | Bar Sales, Bar Inventory |
 | Cash-book expense | Category account (e.g. Salaries) | Cash/Bank/Payable |
 
 - **Cost of goods sold** uses the weighted average cost per litre, which each delivery updates. The waybill amount is what you pay, so transit loss raises the cost of the litres actually received.
 - **Gross profit** = revenue − COGS (including dip losses). **Net profit** = gross profit − operating expenses + other income.
+- The three bar accounts, and the cash-book category for paying its suppliers, carry the name the owner gives it (e.g. "Shop Sales", "Cost of Shop Sales").
+- Cash-book categories are the owner's: rename them, switch them off, or add one, either on its own profit & loss line or posting to an existing account.
 - **Fuel Purchase** in the cash book pays a supplier, which clears the payable from the delivery. Fuel only reaches profit as COGS when it is sold, so it is never counted twice.
 - The dashboard is live: it counts meter readings from shifts that are still open. The P&L under Accounts counts only approved shifts. Once every shift is approved, the two match.
 
@@ -88,6 +116,7 @@ cp .env.example .env.local
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API → `anon` key |
 | `NEXT_PUBLIC_SITE_URL` | The app's public URL (used in confirmation emails) |
 | `NEXT_PUBLIC_STATION_TIMEZONE` | Defaults to `Africa/Freetown` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Optional. Project Settings → API → `service_role` key. Lets the owner add staff and set their passwords. Server only: never give it a `NEXT_PUBLIC_` prefix or share it |
 
 ### 3. Run
 
@@ -96,16 +125,11 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3001, sign up (you become the owner), then in **Settings**:
-
-1. Set the station name, currency (default `SLE`) and shortage tolerance.
-2. Set the pump price and average cost for each fuel.
-3. Add tanks with their current dipped volume, then the pumps that draw from them.
-4. Have staff sign up, then assign their roles.
+Open http://localhost:3001 and sign up. You become the owner and answer the setup questions: station, fuels, tanks, pumps, shifts, payments, what you sell besides fuel, controls, access and staff.
 
 ### 4. Deploy to Vercel
 
-Import the repository in Vercel, add the four environment variables above, and deploy. Then add the production URL to Supabase's redirect URLs.
+Import the repository in Vercel, add the environment variables above, and deploy. Then add the production URL to Supabase's redirect URLs.
 
 ## Development
 
@@ -116,7 +140,7 @@ npm run test:db     # migrations + business rules against an embedded Postgres (
 npm run build
 ```
 
-`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, bar sales and the cash book. It asserts every posting, the P&L, the trial balance, the RLS rules for each role and the fraud controls, and checks that the shop-to-bar migration carries existing rows over.
+`npm run test:db` applies every migration to an in-memory Postgres with Supabase's `auth` schema stubbed. It then runs a full station day: shifts, readings, handover, reconciliation, deliveries, dips, bar sales and the cash book. It asserts every posting, the P&L, the trial balance, the RLS rules for each role, who sees the accounts and cash book, the fraud controls and every station setting, and checks that the shop-to-bar and customisation migrations carry existing rows over.
 
 ### Layout
 
@@ -127,8 +151,9 @@ supabase/
   seed.sql      demo data
 src/
   app/(app)/    dashboard, shifts, tanks, bar, accounting, settings (+ server actions)
+  app/setup/    the owner's setup questions
   app/login, signup, pending, auth/   authentication
-  components/   ui kit, app shell, charts, dashboard and shift components
-  lib/          Supabase clients, auth guards, action helpers, formatting, types
+  components/   ui kit, app shell, charts, dashboard, shift and settings components
+  lib/          Supabase clients, auth and access guards, action helpers, formatting, station wording, types
   proxy.ts      session refresh and route protection
 ```

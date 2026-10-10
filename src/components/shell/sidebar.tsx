@@ -3,18 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { clsx } from "clsx";
-import type { Role } from "@/lib/types";
 import { Brand } from "./brand";
-import { isActive, linksForRole } from "./nav-links";
+import { isActive, linksFor, type NavContext } from "./nav-links";
 
-export function Sidebar({ role, stationName }: { role: Role; stationName: string }) {
+export function Sidebar({ nav, stationName }: { nav: NavContext; stationName: string }) {
   const pathname = usePathname();
 
   return (
     <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col border-r border-zinc-200 bg-white px-3 py-4 dark:border-zinc-800 dark:bg-zinc-950 md:flex">
       <Brand stationName={stationName} />
       <nav className="mt-6 flex flex-1 flex-col gap-1" aria-label="Main">
-        {linksForRole(role).map(({ href, label, icon: Icon }) => (
+        {linksFor(nav).map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}

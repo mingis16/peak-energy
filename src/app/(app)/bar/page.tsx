@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
-import { addDrink, deleteRestock, deleteSale, recordSale, restockItem, updateItem } from "./actions";
+import { redirect } from "next/navigation";
+import { addItem, deleteRestock, deleteSale, recordSale, restockItem, updateItem } from "./actions";
 import { RealtimeRefresh } from "@/components/dashboard/realtime-refresh";
 import { ActionForm, SubmitButton } from "@/components/ui/action-form";
 import { Card, EmptyState, PageHeader, TableWrap } from "@/components/ui/card";
@@ -7,30 +8,27 @@ import { DeleteButton } from "@/components/ui/delete-button";
 import { Field } from "@/components/ui/field";
 import { stockStatusBadge } from "@/components/ui/status-badge";
 import { buttonSecondary, buttonSmall, inputClass, numClass, tableClass, tdClass, thClass } from "@/components/ui/styles";
-import { getStationSettings, isManager, requireStaff } from "@/lib/auth";
+import { accessFor, getStationSettings, isManager, requireStaff } from "@/lib/auth";
 import { rows } from "@/lib/data";
 import { addDaysISO, attendantDateLimits, formatDate, formatMoney, formatNumber, PAYMENT_LABELS, todayISO } from "@/lib/format";
+import { barWords, customerPaymentLabel, customerPaymentOptions } from "@/lib/station";
 import type { BarRestock, BarSale, BarStock } from "@/lib/types";
 
-export const metadata: Metadata = { title: "Bar" };
-
-const CATEGORIES = [
-  "Beer",
-  "Ciders",
-  "Malt drinks",
-  "Soft drinks",
-  "Energy drinks",
-  "Water",
-  "Spirits",
-  "Wine & champagne",
-  "Snacks",
-  "Other",
-];
+export async function generateMetadata(): Promise<Metadata> {
+  return { title: (await getStationSettings()).bar_name };
+}
 
 export default async function BarPage() {
   const { supabase, profile } = await requireStaff();
   const settings = await getStationSettings();
   const manager = isManager(profile.role);
+  // Whatever the station sells besides fuel, in its own words.
+  if (!settings.bar_enabled) redirect(profile.role === "owner" ? "/settings?tab=bar" : "/");
+  const bar = barWords(settings);
+  const categories = settings.bar_categories;
+  const payments = customerPaymentOptions(settings);
+  // Average costs, margins and stock value are for those who may see the accounts.
+  const { finances } = accessFor(profile.role, settings);
   const currency = settings.currency_code;
   const since = addDaysISO(todayISO(), -6);
 
@@ -48,7 +46,7 @@ export default async function BarPage() {
       : Promise.resolve({ data: [], error: null }),
   ]);
 
-  const items = rows<BarStock>(itemsResult, "bar items");
+  const items = rows<BarStock>(itemsResult, bar.items);
   const activeItems = items.filter((i) => i.is_active);
   const sales = rows<BarSale>(salesResult, "bar sales");
   const restocks = rows<BarRestock>(restocksResult, "restocks");
@@ -59,8 +57,8 @@ export default async function BarPage() {
   return (
     <>
       <PageHeader
-        title="Bar"
-        description="Club bar: drinks stock, sales and restocks."
+        title={bar.name}
+        description={`${bar.Items}: stock, sales and restocks.`}
         actions={<RealtimeRefresh channel="bar" tables={["bar_inventory", "bar_sales"]} />}
       />
 
@@ -68,10 +66,10 @@ export default async function BarPage() {
         <div className="grid gap-5 lg:grid-cols-2">
           <Card title="Record a sale" description="Sold at the menu price. Stock and the ledger update immediately.">
             {activeItems.length === 0 ? (
-              <EmptyState>No drinks for sale yet.</EmptyState>
+              <EmptyState>No {bar.items} for sale yet.</EmptyState>
             ) : (
               <ActionForm action={recordSale} className="grid gap-4 sm:grid-cols-2">
-                <Field label="Drink" htmlFor="sale_item" className="sm:col-span-2">
+                <Field label={bar.Item} htmlFor="sale_item" className="sm:col-span-2">
                   <select id="sale_item" name="item_id" required className={inputClass}>
                     {activeItems.map((i) => (
                       <option key={i.id} value={i.id} disabled={i.quantity_in_stock === 0}>
@@ -85,9 +83,11 @@ export default async function BarPage() {
                 </Field>
                 <Field label="Payment" htmlFor="sale_payment">
                   <select id="sale_payment" name="payment_method" defaultValue="CASH" className={inputClass}>
-                    <option value="CASH">Cash</option>
-                    <option value="BANK">Bank / mobile money</option>
-                    <option value="CREDIT">On credit</option>
+                    {payments.map((p) => (
+                      <option key={p.value} value={p.value}>
+                        {p.label}
+                      </option>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Date" htmlFor="sale_date">
@@ -96,7 +96,7 @@ export default async function BarPage() {
                     name="sale_date"
                     type="date"
                     defaultValue={todayISO()}
-                    {...(manager ? {} : attendantDateLimits())}
+                    {...(manager ? {} : attendantDateLimits(settings.attendant_date_window_days))}
                     className={inputClass}
                   />
                 </Field>
@@ -108,12 +108,12 @@ export default async function BarPage() {
           </Card>
 
           {manager && (
-            <Card title="Receive stock" description="New stock for a drink on the list. Updates its average cost.">
+            <Card title="Receive stock" description={`New stock for ${bar.anItem} on the list. Updates its average cost.`}>
               {items.length === 0 ? (
-                <EmptyState>Add a drink first.</EmptyState>
+                <EmptyState>Add {bar.anItem} first.</EmptyState>
               ) : (
                 <ActionForm action={restockItem} className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Drink" htmlFor="restock_item" className="sm:col-span-2">
+                  <Field label={bar.Item} htmlFor="restock_item" className="sm:col-span-2">
                     <select id="restock_item" name="item_id" required className={inputClass}>
                       {items.map((i) => (
                         <option key={i.id} value={i.id}>
@@ -153,19 +153,23 @@ export default async function BarPage() {
 
         {manager && (
           <Card
-            title="Add a drink"
-            description="Add each drink you sell and how many you have. Stock you just bought is recorded as a purchase; stock already on the shelf as opening stock."
+            title={`Add ${bar.anItem}`}
+            description={`Add each ${bar.item} you sell and how many you have. Stock you just bought is recorded as a purchase; stock already on the shelf as opening stock.`}
           >
-            <ActionForm action={addDrink} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <Field label="Drink name" htmlFor="item_name" className="sm:col-span-2">
-                <input id="item_name" name="item_name" required placeholder="e.g. Star beer, 60 cl" className={inputClass} />
+            <ActionForm action={addItem} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label={`${bar.Item} name`} htmlFor="item_name" className="sm:col-span-2" hint="Include the size, e.g. 60 cl or 1 L.">
+                <input id="item_name" name="item_name" required className={inputClass} />
               </Field>
               <Field label="Category" htmlFor="category">
-                <select id="category" name="category" defaultValue="Beer" className={inputClass}>
-                  {CATEGORIES.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
+                {categories.length > 0 ? (
+                  <select id="category" name="category" defaultValue={categories[0]} className={inputClass}>
+                    {categories.map((c) => (
+                      <option key={c}>{c}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input id="category" name="category" required defaultValue="General" className={inputClass} />
+                )}
               </Field>
               <Field label={`Menu price (${currency})`} htmlFor="selling_price">
                 <input id="selling_price" name="selling_price" inputMode="decimal" required className={inputClass} />
@@ -173,7 +177,7 @@ export default async function BarPage() {
               <Field label="How many you have" htmlFor="quantity">
                 <input id="quantity" name="quantity" type="number" min={0} step={1} defaultValue={0} className={inputClass} />
               </Field>
-              <Field label={`Cost per bottle or can (${currency})`} htmlFor="cost_price" hint="What you pay the supplier.">
+              <Field label={`Cost per ${bar.item} (${currency})`} htmlFor="cost_price" hint="What you pay the supplier.">
                 <input id="cost_price" name="cost_price" inputMode="decimal" className={inputClass} />
               </Field>
               <Field label="Where the stock came from" htmlFor="stock_source">
@@ -188,30 +192,30 @@ export default async function BarPage() {
                 <input id="reorder_threshold" name="reorder_threshold" type="number" min={0} step={1} defaultValue={12} className={inputClass} />
               </Field>
               <div className="sm:col-span-2 lg:col-span-4">
-                <SubmitButton>Add drink</SubmitButton>
+                <SubmitButton>Add {bar.item}</SubmitButton>
               </div>
             </ActionForm>
           </Card>
         )}
 
         <Card
-          title="Drinks"
-          description={`${items.length} drink${items.length === 1 ? "" : "s"} · ${lowCount} to reorder${manager ? ` · stock value ${formatMoney(stockValue, currency)} at cost` : ""}`}
+          title={bar.Items}
+          description={`${items.length} ${items.length === 1 ? bar.item : bar.items} · ${lowCount} to reorder${finances ? ` · stock value ${formatMoney(stockValue, currency)} at cost` : ""}`}
         >
           {items.length === 0 ? (
-            <EmptyState>{manager ? "No drinks yet. Add the drinks you sell above." : "No drinks yet."}</EmptyState>
+            <EmptyState>{manager ? `No ${bar.items} yet. Add the ${bar.items} you sell above.` : `No ${bar.items} yet.`}</EmptyState>
           ) : (
             <TableWrap>
               <table className={tableClass}>
                 <thead>
                   <tr>
-                    <th className={thClass}>Drink</th>
+                    <th className={thClass}>{bar.Item}</th>
                     <th className={thClass}>Category</th>
                     <th className={`${thClass} ${numClass}`}>In stock</th>
                     <th className={thClass}>Status</th>
                     <th className={`${thClass} ${numClass}`}>Price</th>
-                    {manager && <th className={`${thClass} ${numClass}`}>Avg cost</th>}
-                    {manager && <th className={`${thClass} ${numClass}`}>Margin</th>}
+                    {finances && <th className={`${thClass} ${numClass}`}>Avg cost</th>}
+                    {finances && <th className={`${thClass} ${numClass}`}>Margin</th>}
                     {manager && <th className={thClass}><span className="sr-only">Edit</span></th>}
                   </tr>
                 </thead>
@@ -229,13 +233,13 @@ export default async function BarPage() {
                       </td>
                       <td className={tdClass}>{stockStatusBadge(item.stock_status)}</td>
                       <td className={`${tdClass} ${numClass}`}>{formatMoney(item.selling_price, currency)}</td>
-                      {/* A drink has no cost until its first stock is received. */}
-                      {manager && (
+                      {/* An item has no cost until its first stock is received. */}
+                      {finances && (
                         <td className={`${tdClass} ${numClass}`}>
                           {Number(item.cost_price) > 0 ? formatMoney(item.cost_price, currency) : "—"}
                         </td>
                       )}
-                      {manager && (
+                      {finances && (
                         <td className={`${tdClass} ${numClass}`}>
                           {Number(item.selling_price) > 0 && Number(item.cost_price) > 0
                             ? `${formatNumber((Number(item.unit_margin) / Number(item.selling_price)) * 100, 1)}%`
@@ -251,9 +255,9 @@ export default async function BarPage() {
                               resetOnSuccess={false}
                               className="mt-2 grid w-64 gap-2 whitespace-normal"
                             >
-                              <input name="item_name" defaultValue={item.item_name} aria-label="Drink name" className={inputClass} />
+                              <input name="item_name" defaultValue={item.item_name} aria-label={`${bar.Item} name`} className={inputClass} />
                               <select name="category" defaultValue={item.category} aria-label="Category" className={inputClass}>
-                                {[...new Set([item.category, ...CATEGORIES])].map((c) => (
+                                {[...new Set([item.category, ...categories])].map((c) => (
                                   <option key={c}>{c}</option>
                                 ))}
                               </select>
@@ -284,7 +288,7 @@ export default async function BarPage() {
                 <thead>
                   <tr>
                     <th className={thClass}>Day</th>
-                    <th className={thClass}>Drink</th>
+                    <th className={thClass}>{bar.Item}</th>
                     <th className={`${thClass} ${numClass}`}>Qty</th>
                     <th className={`${thClass} ${numClass}`}>Total</th>
                     <th className={thClass}>Payment</th>
@@ -298,7 +302,7 @@ export default async function BarPage() {
                       <td className={tdClass}>{itemName.get(sale.item_id)}</td>
                       <td className={`${tdClass} ${numClass}`}>{sale.quantity}</td>
                       <td className={`${tdClass} ${numClass}`}>{formatMoney(sale.total_amount, currency)}</td>
-                      <td className={tdClass}>{PAYMENT_LABELS[sale.payment_method]}</td>
+                      <td className={tdClass}>{customerPaymentLabel(sale.payment_method, settings)}</td>
                       {manager && (
                         <td className={`${tdClass} text-right`}>
                           <DeleteButton action={deleteSale.bind(null, sale.id)} confirm="Delete this sale? The items go back into stock." />
@@ -322,7 +326,7 @@ export default async function BarPage() {
                   <thead>
                     <tr>
                       <th className={thClass}>Day</th>
-                      <th className={thClass}>Drink</th>
+                      <th className={thClass}>{bar.Item}</th>
                       <th className={thClass}>Supplier</th>
                       <th className={`${thClass} ${numClass}`}>Qty</th>
                       <th className={`${thClass} ${numClass}`}>Cost</th>

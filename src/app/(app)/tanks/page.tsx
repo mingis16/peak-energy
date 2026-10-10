@@ -30,6 +30,8 @@ export default async function TanksPage() {
   const { supabase, profile } = await requireStaff();
   const settings = await getStationSettings();
   const manager = isManager(profile.role);
+  // Closing dips reveal losses; attendants record them only if the owner allows it.
+  const closingDips = manager || settings.attendants_record_closing_dips;
   const currency = settings.currency_code;
   const since = addDaysISO(todayISO(), -13);
   const empty = Promise.resolve({ data: [], error: null });
@@ -96,7 +98,7 @@ export default async function TanksPage() {
           <Card
             title="Record a dip"
             description={
-              manager
+              closingDips
                 ? "A closing dip resets book stock to the physical level and posts any gain or loss. Record it after the day's last meter readings."
                 : "Record the opening dip at the start of the day. A manager records closing dips, which show any losses."
             }
@@ -114,7 +116,7 @@ export default async function TanksPage() {
               <Field label="Dip" htmlFor="dip_type">
                 <select id="dip_type" name="dip_type" defaultValue={manager ? "CLOSING" : "OPENING"} className={inputClass}>
                   <option value="OPENING">Opening dip (start of day)</option>
-                  {manager && <option value="CLOSING">Closing dip (end of day)</option>}
+                  {closingDips && <option value="CLOSING">Closing dip (end of day)</option>}
                 </select>
               </Field>
               <Field label="Date" htmlFor="dip_date">
@@ -123,7 +125,7 @@ export default async function TanksPage() {
                   name="dip_date"
                   type="date"
                   defaultValue={todayISO()}
-                  {...(manager ? {} : attendantDateLimits())}
+                  {...(manager ? {} : attendantDateLimits(settings.attendant_date_window_days))}
                   className={inputClass}
                 />
               </Field>

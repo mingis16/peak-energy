@@ -15,8 +15,9 @@ import {
   runAction,
   type ActionState,
 } from "@/lib/actions";
-import { MANAGER_ROLES, STAFF_ROLES } from "@/lib/auth";
+import { getStationSettings, MANAGER_ROLES, STAFF_ROLES } from "@/lib/auth";
 import { formatMoney, todayISO } from "@/lib/format";
+import { barWords } from "@/lib/station";
 
 export async function recordSale(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
@@ -26,7 +27,7 @@ export async function recordSale(_prev: ActionState, form: FormData): Promise<Ac
     const { data, error } = await supabase
       .from("bar_sales")
       .insert({
-        item_id: readText(form, "item_id", "Drink"),
+        item_id: readText(form, "item_id", "Item"),
         quantity,
         sale_date: readDate(form, "sale_date"),
         payment_method: readChoice(form, "payment_method", PAYMENT_METHODS, "Payment method"),
@@ -51,13 +52,13 @@ export async function deleteSale(saleId: string): Promise<ActionState> {
 
 type Supabase = Awaited<ReturnType<typeof authorize>>["supabase"];
 
-/** Where a new drink's stock came from: already on the shelf, or just bought. */
+/** Where a new item's stock came from: already on the shelf, or just bought. */
 const STOCK_SOURCES = ["OPENING", ...PAYMENT_METHODS] as const;
 
-export async function addDrink(_prev: ActionState, form: FormData): Promise<ActionState> {
+export async function addItem(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
-    const name = readText(form, "item_name", "Drink name");
+    const name = readText(form, "item_name", "Name");
     const quantity = readInteger(form, "quantity", "Quantity");
     const source = readChoice(form, "stock_source", STOCK_SOURCES, "Where the stock came from");
     // The cost only matters once there is stock to value.
@@ -101,7 +102,7 @@ export async function addDrink(_prev: ActionState, form: FormData): Promise<Acti
   });
 }
 
-/** Bars don't use product codes, so one is made from the name: "Star beer, 60 cl" → "STAR-BEER-60-CL". */
+/** Stations rarely use product codes here, so one is made from the name: "Star beer, 60 cl" → "STAR-BEER-60-CL". */
 function skuFrom(name: string): string {
   const sku = name
     .normalize("NFKD")
@@ -109,7 +110,7 @@ function skuFrom(name: string): string {
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return sku.slice(0, 32) || "DRINK";
+  return sku.slice(0, 32) || "ITEM";
 }
 
 async function insertWithFreeSku(supabase: Supabase, sku: string, item: Record<string, unknown>): Promise<string> {
@@ -123,7 +124,7 @@ async function insertWithFreeSku(supabase: Supabase, sku: string, item: Record<s
     check(error);
     return data!.id;
   }
-  throw new ActionError("Could not save this drink. Try a slightly different name.");
+  throw new ActionError("Could not save this. Try a slightly different name.");
 }
 
 export async function updateItem(itemId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
@@ -132,7 +133,7 @@ export async function updateItem(itemId: string, _prev: ActionState, form: FormD
     const { error } = await supabase
       .from("bar_inventory")
       .update({
-        item_name: readText(form, "item_name", "Drink name"),
+        item_name: readText(form, "item_name", "Name"),
         category: readText(form, "category", "Category"),
         selling_price: readNumber(form, "selling_price", "Menu price"),
         reorder_threshold: readInteger(form, "reorder_threshold", "Reorder level"),
@@ -140,7 +141,7 @@ export async function updateItem(itemId: string, _prev: ActionState, form: FormD
       })
       .eq("id", itemId);
     check(error);
-    return "Drink updated.";
+    return `${barWords(await getStationSettings()).Item} updated.`;
   });
 }
 
@@ -148,7 +149,7 @@ export async function restockItem(_prev: ActionState, form: FormData): Promise<A
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
     const { error } = await supabase.from("bar_restocks").insert({
-      item_id: readText(form, "item_id", "Drink"),
+      item_id: readText(form, "item_id", "Item"),
       quantity: readInteger(form, "quantity", "Quantity", 1),
       unit_cost: readNumber(form, "unit_cost", "Unit cost"),
       supplier: readOptionalText(form, "supplier"),

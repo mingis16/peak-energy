@@ -13,7 +13,7 @@ export default async function SignupPage({ searchParams }: PageProps<"/signup">)
   return (
     <AuthCard
       title="Create your account"
-      subtitle="The first account becomes the station owner. Everyone else waits for the owner to approve them."
+      subtitle="The first account becomes the station owner and answers a few questions to set the app up. Staff who sign up wait for the owner to give them a role."
     >
       <form action={signup} className="mt-6 flex flex-col gap-4">
         <Field label="Full name" htmlFor="full_name">

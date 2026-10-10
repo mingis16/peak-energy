@@ -52,7 +52,18 @@ export default async function ShiftsPage({ searchParams }: PageProps<"/shifts">)
 
       <div className="flex flex-col gap-5">
         <Card title="Start a shift">
-          <StartShiftForm staff={staff} currentUserId={profile.id} />
+          {manager || settings.attendants_open_shifts ? (
+            <StartShiftForm
+              staff={staff}
+              currentUserId={profile.id}
+              shiftNames={settings.shift_names}
+              dateWindowDays={settings.attendant_date_window_days}
+            />
+          ) : (
+            <p className="text-sm text-zinc-600 dark:text-zinc-300">
+              A manager opens shifts at this station. Yours appears below once it is open.
+            </p>
+          )}
         </Card>
 
         <Card

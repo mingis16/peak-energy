@@ -18,7 +18,7 @@ import {
   tdClass,
   thClass,
 } from "@/components/ui/styles";
-import { getStationSettings, requireManager } from "@/lib/auth";
+import { getStationSettings, requireMoneyAccess } from "@/lib/auth";
 import { rows } from "@/lib/data";
 import {
   addDaysISO,
@@ -29,6 +29,8 @@ import {
   PAYMENT_LABELS,
   todayISO,
 } from "@/lib/format";
+import { barWords } from "@/lib/station";
+import type { Supabase } from "@/lib/supabase/server";
 import type {
   FinancialTransaction,
   LedgerLine,
@@ -39,11 +41,12 @@ import type {
 
 export const metadata: Metadata = { title: "Accounts" };
 
+// The cash book is for those who may use it; the rest is the accounts.
 const TABS = [
-  { id: "overview", label: "Profit & loss" },
-  { id: "transactions", label: "Cash book" },
-  { id: "ledger", label: "Ledger" },
-  { id: "balances", label: "Balances" },
+  { id: "overview", label: "Profit & loss", cashBook: false },
+  { id: "transactions", label: "Cash book", cashBook: true },
+  { id: "ledger", label: "Ledger", cashBook: false },
+  { id: "balances", label: "Balances", cashBook: false },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -54,15 +57,17 @@ const PRESETS = [
   { id: "30d", label: "Last 30 days" },
 ] as const;
 
-const SOURCE_LABELS: Record<string, string> = {
-  SHIFT: "Shift",
-  FUEL_DELIVERY: "Delivery",
-  TANK_DIP: "Dip",
-  BAR_SALE: "Bar sale",
-  BAR_RESTOCK: "Restock",
-  TRANSACTION: "Cash book",
-  OPENING_BALANCE: "Opening",
-};
+function sourceLabels(barName: string): Record<string, string> {
+  return {
+    SHIFT: "Shift",
+    FUEL_DELIVERY: "Delivery",
+    TANK_DIP: "Dip",
+    BAR_SALE: `${barName} sale`,
+    BAR_RESTOCK: `${barName} restock`,
+    TRANSACTION: "Cash book",
+    OPENING_BALANCE: "Opening",
+  };
+}
 
 function resolveRange(params: Record<string, string | string[] | undefined>) {
   const today = todayISO();
@@ -83,11 +88,13 @@ function resolveRange(params: Record<string, string | string[] | undefined>) {
 }
 
 export default async function AccountingPage({ searchParams }: PageProps<"/accounting">) {
-  const { supabase } = await requireManager();
+  const { supabase, access } = await requireMoneyAccess();
   const settings = await getStationSettings();
   const currency = settings.currency_code;
+  const barName = barWords(settings).name;
   const params = await searchParams;
-  const tab: Tab = TABS.find((t) => t.id === params.tab)?.id ?? "overview";
+  const tabs = TABS.filter((t) => access.finances || (t.cashBook && access.cashBook));
+  const tab: Tab = tabs.find((t) => t.id === params.tab)?.id ?? tabs[0].id;
   const range = resolveRange(params);
   const entryId = typeof params.entry === "string" ? params.entry : undefined;
   const account = typeof params.account === "string" ? params.account : undefined;
@@ -101,10 +108,17 @@ export default async function AccountingPage({ searchParams }: PageProps<"/accou
 
   return (
     <>
-      <PageHeader title="Accounts" description="Double-entry ledger. Everything below is posted automatically." />
+      <PageHeader
+        title="Accounts"
+        description={
+          access.finances
+            ? "Double-entry ledger. Everything below is posted automatically."
+            : "Money in and out that is not fuel or sales."
+        }
+      />
 
       <nav aria-label="Accounts sections" className="mb-4 flex gap-1 overflow-x-auto rounded-lg border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-950">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <Link
             key={t.id}
             href={hrefFor({ tab: t.id, entry: undefined, account: undefined })}
@@ -143,8 +157,12 @@ export default async function AccountingPage({ searchParams }: PageProps<"/accou
         </div>
       )}
 
-      {tab === "overview" && <ProfitAndLoss supabase={supabase} from={range.from} to={range.to} currency={currency} />}
-      {tab === "transactions" && <CashBook supabase={supabase} from={range.from} to={range.to} currency={currency} />}
+      {tab === "overview" && (
+        <ProfitAndLoss supabase={supabase} from={range.from} to={range.to} currency={currency} barName={barName} />
+      )}
+      {tab === "transactions" && (
+        <CashBook supabase={supabase} from={range.from} to={range.to} currency={currency} canRecord={access.cashBook} />
+      )}
       {tab === "ledger" && (
         <Ledger
           supabase={supabase}
@@ -154,6 +172,7 @@ export default async function AccountingPage({ searchParams }: PageProps<"/accou
           entryId={entryId}
           account={account}
           hrefFor={hrefFor}
+          barName={barName}
         />
       )}
       {tab === "balances" && (
@@ -161,17 +180,29 @@ export default async function AccountingPage({ searchParams }: PageProps<"/accou
           supabase={supabase}
           asOf={isISODate(params.as_of) ? params.as_of : todayISO()}
           currency={currency}
+          barName={barName}
         />
       )}
     </>
   );
 }
 
-type Supabase = Awaited<ReturnType<typeof requireManager>>["supabase"];
 
 // ---------------------------------------------------------------------------
 
-async function ProfitAndLoss({ supabase, from, to, currency }: { supabase: Supabase; from: string; to: string; currency: string }) {
+async function ProfitAndLoss({
+  supabase,
+  from,
+  to,
+  currency,
+  barName,
+}: {
+  supabase: Supabase;
+  from: string;
+  to: string;
+  currency: string;
+  barName: string;
+}) {
   const [pnlResult, pendingResult] = await Promise.all([
     supabase.rpc("get_profit_and_loss", { p_from: from, p_to: to }),
     supabase
@@ -197,7 +228,7 @@ async function ProfitAndLoss({ supabase, from, to, currency }: { supabase: Supab
   return (
     <div className="flex flex-col gap-5">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatTile label="Revenue" value={formatMoney(revenue, currency)} detail="Fuel and bar sales" />
+        <StatTile label="Revenue" value={formatMoney(revenue, currency)} detail={`Fuel and ${barName} sales`} />
         <StatTile label="Cost of goods sold" value={formatMoney(cogs, currency)} detail="Incl. dip variance" />
         <StatTile
           label="Gross profit"
@@ -265,7 +296,20 @@ function Total({ label, value, currency, double = false }: { label: string; valu
 
 // ---------------------------------------------------------------------------
 
-async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; from: string; to: string; currency: string }) {
+async function CashBook({
+  supabase,
+  from,
+  to,
+  currency,
+  canRecord,
+}: {
+  supabase: Supabase;
+  from: string;
+  to: string;
+  currency: string;
+  /** Those who may see the accounts but not use the cash book only read it. */
+  canRecord: boolean;
+}) {
   const [txResult, categoriesResult] = await Promise.all([
     supabase
       .from("financial_transactions")
@@ -283,8 +327,10 @@ async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; 
   const moneyIn = transactions.filter((t) => t.transaction_type === "INCOME").reduce((s, t) => s + Number(t.amount), 0);
   const moneyOut = transactions.filter((t) => t.transaction_type === "EXPENSE").reduce((s, t) => s + Number(t.amount), 0);
 
+  // Categories are the owner's to rename or switch off, so fall back to the first one.
+  const defaultCategory = expense.find((c) => c.name === "Operating Expense")?.name ?? expense[0]?.name;
   const categorySelect = (id: string, defaultValue?: string) => (
-    <select id={id} name="category" required defaultValue={defaultValue ?? "Operating Expense"} className={inputClass}>
+    <select id={id} name="category" required defaultValue={defaultValue ?? defaultCategory} className={inputClass}>
       <optgroup label="Money out">
         {expense.map((c) => (
           <option key={c.name}>{c.name}</option>
@@ -300,48 +346,50 @@ async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; 
 
   return (
     <div className="flex flex-col gap-5">
-      <Card
-        title="Record money in or out"
-        description="Expenses, supplier payments, bank deposits and other income. Fuel and bar sales post themselves."
-      >
-        <ActionForm action={addTransaction} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Field label="Category" htmlFor="category">
-            {categorySelect("category")}
-          </Field>
-          <Field label={`Amount (${currency})`} htmlFor="amount">
-            <input id="amount" name="amount" inputMode="decimal" required className={inputClass} />
-          </Field>
-          <Field label="Paid / received by" htmlFor="payment_method">
-            <select id="payment_method" name="payment_method" defaultValue="CASH" className={inputClass}>
-              <option value="CASH">Cash</option>
-              <option value="BANK">Bank / mobile money</option>
-              <option value="CREDIT">On credit (owed)</option>
-            </select>
-          </Field>
-          <Field label="Date" htmlFor="transaction_date">
-            <input id="transaction_date" name="transaction_date" type="date" defaultValue={todayISO()} className={inputClass} />
-          </Field>
-          <Field label="Description" htmlFor="description" className="sm:col-span-2 lg:col-span-3">
-            <input id="description" name="description" placeholder="e.g. October generator diesel" className={inputClass} />
-          </Field>
-          <div className="flex items-end">
-            <SubmitButton>Save</SubmitButton>
-          </div>
-        </ActionForm>
-        <details className="mt-4 text-sm">
-          <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
-            What each category does
-          </summary>
-          <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
-            {[...expense, ...income].map((c) => (
-              <div key={c.name}>
-                <dt className="font-medium text-zinc-800 dark:text-zinc-200">{c.name}</dt>
-                <dd className="text-xs text-zinc-500 dark:text-zinc-400">{c.description}</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-      </Card>
+      {canRecord && (
+        <Card
+          title="Record money in or out"
+          description="Expenses, supplier payments, bank deposits and other income. Sales post themselves."
+        >
+          <ActionForm action={addTransaction} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Category" htmlFor="category">
+              {categorySelect("category")}
+            </Field>
+            <Field label={`Amount (${currency})`} htmlFor="amount">
+              <input id="amount" name="amount" inputMode="decimal" required className={inputClass} />
+            </Field>
+            <Field label="Paid / received by" htmlFor="payment_method">
+              <select id="payment_method" name="payment_method" defaultValue="CASH" className={inputClass}>
+                <option value="CASH">Cash</option>
+                <option value="BANK">Bank / mobile money</option>
+                <option value="CREDIT">On credit (owed)</option>
+              </select>
+            </Field>
+            <Field label="Date" htmlFor="transaction_date">
+              <input id="transaction_date" name="transaction_date" type="date" defaultValue={todayISO()} className={inputClass} />
+            </Field>
+            <Field label="Description" htmlFor="description" className="sm:col-span-2 lg:col-span-3">
+              <input id="description" name="description" placeholder="e.g. October generator diesel" className={inputClass} />
+            </Field>
+            <div className="flex items-end">
+              <SubmitButton>Save</SubmitButton>
+            </div>
+          </ActionForm>
+          <details className="mt-4 text-sm">
+            <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
+              What each category does
+            </summary>
+            <dl className="mt-2 grid gap-x-6 gap-y-2 sm:grid-cols-2">
+              {[...expense, ...income].map((c) => (
+                <div key={c.name}>
+                  <dt className="font-medium text-zinc-800 dark:text-zinc-200">{c.name}</dt>
+                  <dd className="text-xs text-zinc-500 dark:text-zinc-400">{c.description}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+        </Card>
+      )}
 
       <Card
         title="Cash book"
@@ -360,7 +408,7 @@ async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; 
                   <th className={thClass}>Method</th>
                   <th className={`${thClass} ${numClass}`}>In</th>
                   <th className={`${thClass} ${numClass}`}>Out</th>
-                  <th className={thClass}><span className="sr-only">Actions</span></th>
+                  {canRecord && <th className={thClass}><span className="sr-only">Actions</span></th>}
                 </tr>
               </thead>
               <tbody>
@@ -379,30 +427,32 @@ async function CashBook({ supabase, from, to, currency }: { supabase: Supabase; 
                     <td className={`${tdClass} ${numClass}`}>
                       {t.transaction_type === "EXPENSE" ? formatMoney(t.amount, currency) : ""}
                     </td>
-                    <td className={`${tdClass} text-right`}>
-                      <div className="flex items-start justify-end gap-2">
-                        <details className="text-left">
-                          <summary className={`${buttonSecondary} ${buttonSmall} cursor-pointer list-none`}>Edit</summary>
-                          <ActionForm
-                            action={updateTransaction.bind(null, t.id)}
-                            resetOnSuccess={false}
-                            className="mt-2 grid w-64 gap-2 whitespace-normal"
-                          >
-                            {categorySelect(`category-${t.id}`, t.category)}
-                            <input name="amount" defaultValue={t.amount} inputMode="decimal" aria-label="Amount" className={inputClass} />
-                            <select name="payment_method" defaultValue={t.payment_method} aria-label="Payment method" className={inputClass}>
-                              <option value="CASH">Cash</option>
-                              <option value="BANK">Bank / mobile money</option>
-                              <option value="CREDIT">On credit (owed)</option>
-                            </select>
-                            <input name="transaction_date" type="date" defaultValue={t.transaction_date} aria-label="Date" className={inputClass} />
-                            <input name="description" defaultValue={t.description ?? ""} aria-label="Description" className={inputClass} />
-                            <SubmitButton className={`${buttonSecondary} ${buttonSmall}`}>Save</SubmitButton>
-                          </ActionForm>
-                        </details>
-                        <DeleteButton action={deleteTransaction.bind(null, t.id)} confirm="Delete this transaction and reverse its ledger posting?" />
-                      </div>
-                    </td>
+                    {canRecord && (
+                      <td className={`${tdClass} text-right`}>
+                        <div className="flex items-start justify-end gap-2">
+                          <details className="text-left">
+                            <summary className={`${buttonSecondary} ${buttonSmall} cursor-pointer list-none`}>Edit</summary>
+                            <ActionForm
+                              action={updateTransaction.bind(null, t.id)}
+                              resetOnSuccess={false}
+                              className="mt-2 grid w-64 gap-2 whitespace-normal"
+                            >
+                              {categorySelect(`category-${t.id}`, t.category)}
+                              <input name="amount" defaultValue={t.amount} inputMode="decimal" aria-label="Amount" className={inputClass} />
+                              <select name="payment_method" defaultValue={t.payment_method} aria-label="Payment method" className={inputClass}>
+                                <option value="CASH">Cash</option>
+                                <option value="BANK">Bank / mobile money</option>
+                                <option value="CREDIT">On credit (owed)</option>
+                              </select>
+                              <input name="transaction_date" type="date" defaultValue={t.transaction_date} aria-label="Date" className={inputClass} />
+                              <input name="description" defaultValue={t.description ?? ""} aria-label="Description" className={inputClass} />
+                              <SubmitButton className={`${buttonSecondary} ${buttonSmall}`}>Save</SubmitButton>
+                            </ActionForm>
+                          </details>
+                          <DeleteButton action={deleteTransaction.bind(null, t.id)} confirm="Delete this transaction and reverse its ledger posting?" />
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -424,6 +474,7 @@ async function Ledger({
   entryId,
   account,
   hrefFor,
+  barName,
 }: {
   supabase: Supabase;
   from: string;
@@ -432,7 +483,9 @@ async function Ledger({
   entryId?: string;
   account?: string;
   hrefFor: (next: Record<string, string | undefined>) => string;
+  barName: string;
 }) {
+  const sources = sourceLabels(barName);
   let query = supabase.from("v_ledger").select("*");
   if (entryId) {
     query = query.eq("entry_id", entryId);
@@ -501,7 +554,7 @@ async function Ledger({
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{entry.description}</p>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {formatDate(entry.date)} · {SOURCE_LABELS[entry.source] ?? entry.source}
+                      {formatDate(entry.date)} · {sources[entry.source] ?? entry.source}
                     </p>
                   </div>
                   {Math.abs(debit - credit) < 0.005 && (
@@ -545,16 +598,18 @@ async function Ledger({
 
 // ---------------------------------------------------------------------------
 
-const KEY_ACCOUNTS = [
-  { code: "1000", label: "Cash on hand" },
-  { code: "1010", label: "Bank & mobile money" },
-  { code: "1100", label: "Owed by credit customers" },
-  { code: "2000", label: "Owed to suppliers" },
-  { code: "1200", label: "Fuel stock (at cost)" },
-  { code: "1210", label: "Bar stock (at cost)" },
-];
+function keyAccounts(barName: string) {
+  return [
+    { code: "1000", label: "Cash on hand" },
+    { code: "1010", label: "Bank & mobile money" },
+    { code: "1100", label: "Owed by credit customers" },
+    { code: "2000", label: "Owed to suppliers" },
+    { code: "1200", label: "Fuel stock (at cost)" },
+    { code: "1210", label: `${barName} stock (at cost)` },
+  ];
+}
 
-async function Balances({ supabase, asOf, currency }: { supabase: Supabase; asOf: string; currency: string }) {
+async function Balances({ supabase, asOf, currency, barName }: { supabase: Supabase; asOf: string; currency: string; barName: string }) {
   const tb = rows<TrialBalanceRow>(await supabase.rpc("get_trial_balance", { p_as_of: asOf }), "trial balance");
   const byCode = new Map(tb.map((r) => [r.account_code, r]));
   const totalDebit = tb.reduce((s, r) => s + Number(r.total_debit), 0);
@@ -572,7 +627,7 @@ async function Balances({ supabase, asOf, currency }: { supabase: Supabase; asOf
       </form>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        {KEY_ACCOUNTS.map((a) => (
+        {keyAccounts(barName).map((a) => (
           <StatTile key={a.code} label={a.label} value={formatMoney(byCode.get(a.code)?.balance ?? 0, currency)} />
         ))}
       </div>

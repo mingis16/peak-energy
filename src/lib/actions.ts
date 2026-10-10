@@ -1,4 +1,4 @@
-import { unstable_rethrow } from "next/navigation";
+import { redirect, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { PostgrestError } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
@@ -25,6 +25,16 @@ export async function runAction(body: () => Promise<string>): Promise<ActionStat
     console.error(error);
     return { ok: false, error: "Something went wrong. Please try again." };
   }
+}
+
+/**
+ * After a successful action, moves on to the page the form names in `next`,
+ * such as the following setup step. Only paths on this site are followed.
+ */
+export function continueTo(form: FormData, state: ActionState): ActionState {
+  const next = String(form.get("next") ?? "");
+  if (state?.ok && /^\/(?!\/)[\w\-/?=&]*$/.test(next)) redirect(next);
+  return state;
 }
 
 /** Re-checks the session inside a server action. RLS still has the final say. */
@@ -123,6 +133,14 @@ export function readDate(form: FormData, name: string): string {
   if (!value) return todayISO();
   if (!isISODate(value)) throw new ActionError("Enter a valid date.");
   return value;
+}
+
+/** A list typed one item per line (or separated by commas); blanks dropped. */
+export function readList(form: FormData, name: string): string[] {
+  return String(form.get(name) ?? "")
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 export function readChoice<T extends string>(form: FormData, name: string, choices: readonly T[], label: string): T {

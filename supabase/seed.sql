@@ -1,6 +1,13 @@
 -- Demo data for local development (`supabase db reset` runs this file).
 -- Do not run it against a live station: it creates tanks and stock.
 
+-- The demo station is a club bar whose owner has answered the setup questions.
+update public.station_settings
+set setup_completed_at = now(),
+    bar_name = 'Bar',
+    bar_item_label = 'drink',
+    bar_categories = '{Beer,Ciders,Malt drinks,Soft drinks,Energy drinks,Water,Spirits,Wine & champagne,Snacks,Other}';
+
 update public.fuel_products set price_per_liter = 30.00, avg_cost_per_liter = 27.00 where code = 'PMS';
 update public.fuel_products set price_per_liter = 31.00, avg_cost_per_liter = 28.00 where code = 'AGO';
 update public.fuel_products set price_per_liter = 30.00, avg_cost_per_liter = 27.50 where code = 'DPK';

@@ -72,10 +72,10 @@ export function todayISO(): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: STATION_TIMEZONE }).format(new Date());
 }
 
-/** Dates attendants may record: today, or a day either side. The database enforces the same rule. */
-export function attendantDateLimits(): { min: string; max: string } {
+/** Dates attendants may record: today, give or take the owner's leeway. The database enforces the same rule. */
+export function attendantDateLimits(windowDays: number): { min: string; max: string } {
   const today = todayISO();
-  return { min: addDaysISO(today, -1), max: addDaysISO(today, 1) };
+  return { min: addDaysISO(today, -windowDays), max: addDaysISO(today, windowDays) };
 }
 
 export function addDaysISO(isoDate: string, days: number): string {

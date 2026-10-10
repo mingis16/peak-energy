@@ -49,9 +49,26 @@ async function writeLegacyShopRows() {
     values ('2026-09-15', 'Shop Supplier Payment', 300, 'EXPENSE')`);
 }
 
+// A reconciled full-day shift from before stations named their own shifts,
+// when 'Day' was shown as "Full day", worked by an attendant from those days.
+const CUSTOMISATION_MIGRATION = "20261010000100_station_customisation.sql";
+const LEGACY_ATTENDANT = "00000000-0000-0000-0000-0000000000ee";
+let LEGACY_SHIFT;
+async function writeLegacyShift() {
+  await db.query(`insert into auth.users (id, email, raw_user_meta_data) values ($1, 'old@x.sl', '{"full_name":"Old Hand"}')`, [LEGACY_ATTENDANT]);
+  // The first account becomes the owner; this one was an attendant.
+  await db.exec(`alter table profiles disable trigger profiles_before_update`);
+  await db.query(`update profiles set role = 'attendant' where id = $1`, [LEGACY_ATTENDANT]);
+  await db.exec(`alter table profiles enable trigger profiles_before_update`);
+  LEGACY_SHIFT = (await db.query(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-09-01', 'Day', $1) returning id`, [LEGACY_ATTENDANT])).rows[0].id;
+  await db.query(`update shifts set status = 'SUBMITTED' where id = $1`, [LEGACY_SHIFT]);
+  await db.query(`update shifts set status = 'RECONCILED' where id = $1`, [LEGACY_SHIFT]);
+}
+
 for (const file of fs.readdirSync(MIGRATIONS).sort()) {
   try {
     if (file === BAR_MIGRATION) await writeLegacyShopRows();
+    if (file === CUSTOMISATION_MIGRATION) await writeLegacyShift();
     await db.exec(fs.readFileSync(path.join(MIGRATIONS, file), "utf8"));
     console.log("applied " + file);
   } catch (e) {
@@ -313,14 +330,41 @@ const MALT = (await as(MANAGER, () => one(`insert into bar_inventory (item_name,
   values ('Maltina, 33 cl', 'MALTINA-33-CL', 'Malt drinks', 0, 0, 25) returning id`))).id;
 await as(MANAGER, () => q(`insert into bar_restocks (item_id, quantity, unit_cost, payment_method, restock_date) values ($1, 24, 16, 'OPENING', $2)`, [MALT, D1]));
 const malt = await one(`select quantity_in_stock, cost_price from bar_inventory where id = $1`, [MALT]);
-const maltLines = await q(`select account_code, debit, credit from v_ledger where description = 'Opening bar stock — 24 × Maltina, 33 cl' order by account_code`);
+const maltLines = await q(`select account_code, debit, credit from v_ledger where description = 'Bar opening stock — 24 × Maltina, 33 cl' order by account_code`);
 check("opening count: 24 at cost 16, Dr Bar Inventory / Cr Owner's Equity 384 (no cash or payable)",
   malt.quantity_in_stock === 24 && num(malt.cost_price) === 16 && maltLines.length === 2 &&
   maltLines[0].account_code === "1210" && num(maltLines[0].debit) === 384 && maltLines[1].account_code === "3000" && num(maltLines[1].credit) === 384,
   { malt, maltLines });
 
+console.log("\n== access by role");
+check("managers see neither the accounts nor the cash book unless the owner allows it",
+  (await as(MANAGER, () => q(`select * from journal_lines`))).length === 0 &&
+  (await as(MANAGER, () => q(`select * from financial_transactions`))).length === 0 &&
+  (await as(MANAGER, () => q(`select * from accounts`))).length === 0);
+await expectError("…nor record money in or out", () =>
+  as(MANAGER, () => q(`insert into financial_transactions (category, amount, transaction_type) values ('Salary', 1, 'EXPENSE')`)), /row-level security/);
+const hiddenKpis = await as(MANAGER, () => one(`select get_dashboard_kpis('2026-10-01') k`)).then((r) => r.k);
+check("…and the dashboard leaves out their costs and profit",
+  hiddenKpis.gross_profit === null && hiddenKpis.net_profit === null && hiddenKpis.fuel_cogs === null && num(hiddenKpis.fuel_sales) === 39800, hiddenKpis);
+const hiddenTrend = await as(MANAGER, () => q(`select * from get_daily_trend('2026-10-01', '2026-10-01')`));
+check("…as does the sales trend", hiddenTrend[0].gross_profit === null && num(hiddenTrend[0].fuel_sales) === 39800, hiddenTrend);
+await expectError("only the owner grants access", () =>
+  as(MANAGER, () => q(`update station_settings set managers_view_finances = true`)), /Only the owner/);
+await as(OWNER, () => q(`update station_settings set managers_use_cash_book = true`));
+check("with cash-book access a manager sees the cash book, not the ledger",
+  (await as(MANAGER, () => q(`select * from financial_transactions`))).length > 0 &&
+  (await as(MANAGER, () => q(`select * from journal_lines`))).length === 0);
+await as(OWNER, () => q(`update station_settings set managers_view_finances = true`));
+check("with accounts access, the ledger as well", (await as(MANAGER, () => q(`select * from journal_lines`))).length > 0);
+check("attendants see neither, whatever managers may",
+  (await as(ATTENDANT, () => q(`select * from journal_lines`))).length === 0 &&
+  (await as(ATTENDANT, () => q(`select * from financial_transactions`))).length === 0);
+check("meter corrections are for the owner's eyes",
+  (await as(MANAGER, () => q(`select * from meter_corrections`))).length === 0 &&
+  (await as(OWNER, () => q(`select * from meter_corrections`))).length > 0);
+
 console.log("\n== cash book");
-const TX = (await as(MANAGER, () => one(`insert into financial_transactions (transaction_date, category, amount, transaction_type, description)
+const TX =(await as(MANAGER, () => one(`insert into financial_transactions (transaction_date, category, amount, transaction_type, description)
   values ($1, 'Salary', 5000, 'EXPENSE', 'September wages') returning id, recorded_by, journal_entry_id`, [D1])));
 check("recorded_by defaults to the manager's name", TX.recorded_by === "Mary Manager", TX);
 await as(MANAGER, () => q(`update financial_transactions set amount = 6000 where id = $1`, [TX.id]));
@@ -429,6 +473,115 @@ check("routine stock and meter moves are not logged (only the pump rename and ta
 await expectError("nobody can write to the audit log", () =>
   as(OWNER, () => q(`insert into audit_log (table_name, action) values ('x', 'y')`)), /permission denied/);
 await expectError("…or erase it", () => as(OWNER, () => q(`delete from audit_log`)), /permission denied/);
+
+console.log("\n== station customisation");
+const st = await one(`select setup_completed_at, bar_name, bar_item_label, shift_names from station_settings`);
+check("a station already in use counts as set up, as a club bar",
+  st.setup_completed_at !== null && st.bar_name === "Bar" && st.bar_item_label === "drink", st);
+check("old 'Day' shifts are now stored as 'Full day', reconciled ones included",
+  (await one(`select shift_label from shifts where id = $1`, [LEGACY_SHIFT])).shift_label === "Full day");
+check("…without showing in the activity log",
+  (await one(`select count(*)::int c from audit_log where table_name = 'shifts' and record_id = $1 and new_data ? 'shift_label'`, [LEGACY_SHIFT])).c === 0);
+await expectError("a manager cannot change the station's settings", () =>
+  as(MANAGER, () => q(`update station_settings set shift_names = '{Day,Night}'`)), /Only the owner/);
+await expectError("…or reopen the setup", () =>
+  as(MANAGER, () => q(`update station_settings set setup_completed_at = null`)), /Only the owner/);
+
+await as(OWNER, () => q(`update station_settings set shift_names = '{" Day ", "night", "DAY", ""}'`));
+const cleaned = (await one(`select shift_names from station_settings`)).shift_names;
+check("shift names are trimmed, and blanks and repeats dropped", JSON.stringify(cleaned) === '["Day","night"]', cleaned);
+await expectError("a station needs at least one shift", () =>
+  as(OWNER, () => q(`update station_settings set shift_names = '{"  "}'`)), /at least one shift/);
+await as(OWNER, () => q(`update station_settings set shift_names = '{Day,Night}'`));
+await expectError("shifts take the station's own names", () =>
+  as(MANAGER, () => q(`insert into shifts (shift_date, shift_label, attendant_id) values ('2026-10-05', 'Morning', $1)`, [ATTENDANT])),
+  /not one of this station's shifts: Day, Night/);
+const nightShift = await as(ATTENDANT, () => one(`insert into shifts (shift_label, attendant_id) values ('Night', $1) returning id`, [ATTENDANT]));
+check("…so an attendant opens a Night shift", !!nightShift?.id);
+check("shifts opened before keep their names", (await one(`select shift_label from shifts where id = $1`, [S1])).shift_label === "Morning");
+
+await as(OWNER, () => q(`update station_settings set attendants_open_shifts = false`));
+await expectError("when managers open shifts, attendants cannot", () =>
+  as(ATTENDANT, () => q(`insert into shifts (shift_label, attendant_id) values ('Day', $1)`, [ATTENDANT])), /A manager opens shifts/);
+const managerOpened = await as(MANAGER, () => one(`insert into shifts (shift_label, attendant_id) values ('Day', $1) returning id`, [ATTENDANT]));
+check("…a manager opens it for them", !!managerOpened?.id);
+await as(OWNER, () => q(`update station_settings set attendants_open_shifts = true`));
+
+await as(OWNER, () => q(`update station_settings set accepts_customer_credit = false, accepts_digital_payments = false, digital_payments_label = 'Orange Money'`));
+await expectError("no credit slips when the station does not sell on credit", () =>
+  as(ATTENDANT, () => q(`update shifts set credit_slips_amount = 100 where id = $1`, [nightShift.id])), /does not sell on credit/);
+await expectError("no transfers when it does not take them", () =>
+  as(ATTENDANT, () => q(`update shifts set digital_transfers_amount = 100 where id = $1`, [nightShift.id])), /does not take Orange Money/);
+await expectError("…and no bar sales on credit", () =>
+  as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity, payment_method) values ($1, 1, 'CREDIT')`, [ITEM])), /does not sell on credit/);
+await as(OWNER, () => q(`update station_settings set accepts_customer_credit = true, accepts_digital_payments = true`));
+
+await as(OWNER, () => q(`update station_settings set attendant_date_window_days = 0`));
+await expectError("with no leeway, attendants record today only", () =>
+  as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity, sale_date) values ($1, 1, current_date - 1)`, [ITEM])), /only record bar sales for today\./);
+await as(OWNER, () => q(`update station_settings set attendant_date_window_days = 3`));
+const backdated = await as(ATTENDANT, () => one(`insert into bar_sales (item_id, quantity, sale_date) values ($1, 1, current_date - 3) returning id`, [ITEM]));
+check("…with three days, they can date a sale three days back", !!backdated?.id);
+await as(MANAGER, () => q(`delete from bar_sales where id = $1`, [backdated.id]));
+await expectError("the leeway is at most a week", () =>
+  as(OWNER, () => q(`update station_settings set attendant_date_window_days = 30`)), /violates check constraint/);
+await as(OWNER, () => q(`update station_settings set attendant_date_window_days = 1`));
+
+await as(OWNER, () => q(`update station_settings set attendants_record_closing_dips = true`));
+const attendantDip = await as(ATTENDANT, () => one(`insert into tank_dips (tank_id, dip_type, volume_liters) values ($1, 'CLOSING', 3600) returning id, variance_liters`, [T2]));
+check("the owner can let attendants record closing dips", num(attendantDip?.variance_liters) === 0, attendantDip);
+await as(MANAGER, () => q(`delete from tank_dips where id = $1`, [attendantDip.id]));
+await as(OWNER, () => q(`update station_settings set attendants_record_closing_dips = false`));
+
+await as(OWNER, () => q(`update station_settings set bar_name = ' Mini-mart ', bar_item_label = ' Item '`));
+const martAccounts = (await q(`select name from accounts where code in ('1210', '4010', '5010') order by code`)).map((a) => a.name);
+check("renaming the bar renames its accounts", martAccounts.join("|") === "Mini-mart Inventory|Mini-mart Sales|Cost of Mini-mart Sales", martAccounts);
+check("…and its supplier category, which cash-book entries follow",
+  (await one(`select category from financial_transactions where amount = 300`)).category === "Mini-mart Supplier Payment");
+check("the word for one thing sold is kept trimmed and in lower case", (await one(`select bar_item_label from station_settings`)).bar_item_label === "item");
+const martSale = await as(ATTENDANT, () => one(`insert into bar_sales (item_id, quantity) values ($1, 1) returning journal_entry_id`, [ITEM]));
+check("sales are described by the new name",
+  (await one(`select description from journal_entries where id = $1`, [martSale.journal_entry_id])).description === "Mini-mart sale — 1 × Star beer, 60 cl");
+await as(OWNER, () => q(`update station_settings set bar_enabled = false`));
+await expectError("nothing is sold once the bar is switched off", () =>
+  as(ATTENDANT, () => q(`insert into bar_sales (item_id, quantity) values ($1, 1)`, [ITEM])), /switched off/);
+await as(OWNER, () => q(`update station_settings set bar_enabled = true, bar_name = 'Bar', bar_item_label = 'drink'`));
+check("renaming it back restores the names",
+  (await one(`select name from accounts where code = '4010'`)).name === "Bar Sales" &&
+  (await one(`select count(*)::int c from transaction_categories where name = 'Bar Supplier Payment'`)).c === 1);
+
+await as(MANAGER, () => q(`update fuel_products set price_per_liter = 29 where code = 'DPK'`));
+await as(MANAGER, () => q(`select remove_fuel_product('DPK')`));
+check("an unused fuel can be removed, with its price history",
+  (await one(`select count(*)::int c from fuel_products where code = 'DPK'`)).c === 0 &&
+  (await one(`select count(*)::int c from fuel_price_history where fuel_type = 'DPK'`)).c === 0);
+await expectError("a fuel in a tank stays", () => as(MANAGER, () => q(`select remove_fuel_product('PMS')`)), /Tanks hold PMS/);
+await expectError("attendants cannot remove fuels", () => as(ATTENDANT, () => q(`select remove_fuel_product('AGO')`)), /Only a manager/);
+
+await as(OWNER, () => q(`select add_cash_category('Security guards', 'EXPENSE', 'Night watchmen')`));
+const guards = await one(`select c.account_code, a.name, a.report_group from transaction_categories c join accounts a on a.code = c.account_code where c.name = 'Security guards'`);
+check("a new category gets its own expense line, after the last one (6710)",
+  guards?.account_code === "6710" && guards.name === "Security guards" && guards.report_group === "OPEX", guards);
+await as(MANAGER, () => q(`insert into financial_transactions (transaction_date, category, amount, transaction_type) values ('2026-10-01', 'Security guards', 700, 'EXPENSE')`));
+const guardsPnl = await as(MANAGER, () => q(`select * from get_profit_and_loss('2026-10-01', '2026-10-01') where account_code = '6710'`));
+check("…which shows on the profit & loss", guardsPnl.length === 1 && num(guardsPnl[0].amount) === 700, guardsPnl);
+await as(OWNER, () => q(`update transaction_categories set name = 'Security' where name = 'Security guards'`));
+check("renaming the category renames its own account and moves its entries",
+  (await one(`select name from accounts where code = '6710'`)).name === "Security" &&
+  (await one(`select category from financial_transactions where amount = 700`)).category === "Security");
+await as(OWNER, () => q(`select add_cash_category('Car wash', 'INCOME', null, '4900')`));
+check("a category can post to an existing account", (await one(`select account_code from transaction_categories where name = 'Car wash'`)).account_code === "4900");
+await expectError("category names are unique, whatever the case", () =>
+  as(OWNER, () => q(`select add_cash_category('car WASH', 'INCOME')`)), /already a category/);
+await expectError("managers cannot add categories", () =>
+  as(MANAGER, () => q(`select add_cash_category('Tips', 'INCOME')`)), /Only the owner/);
+await expectError("categories are only added through add_cash_category", () =>
+  as(OWNER, () => q(`insert into transaction_categories (name, transaction_type, account_code) values ('Y', 'EXPENSE', '6000')`)), /permission denied/);
+await expectError("a category's account is fixed", () =>
+  as(OWNER, () => q(`update transaction_categories set account_code = '6000' where name = 'Security'`)), /permission denied/);
+check("settings and category changes are in the audit log",
+  (await one(`select count(*)::int c from audit_log where table_name = 'station_settings'`)).c > 0 &&
+  (await one(`select count(*)::int c from audit_log where table_name = 'transaction_categories'`)).c > 0);
 
 const finalTb = await as(MANAGER, () => q(`select * from get_trial_balance('2026-12-31')`));
 const fdr = finalTb.reduce((a, r) => a + num(r.total_debit), 0), fcr = finalTb.reduce((a, r) => a + num(r.total_credit), 0);

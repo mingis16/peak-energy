@@ -4,33 +4,135 @@ import {
   ActionError,
   authorize,
   check,
+  continueTo,
   readChoice,
+  readInteger,
+  readList,
   readNumber,
+  readOptionalText,
   readText,
   runAction,
   type ActionState,
 } from "@/lib/actions";
 import { MANAGER_ROLES } from "@/lib/auth";
+import { createAdminClient } from "@/lib/supabase/admin";
+
+// Actions used by the setup questions as well take a `next` field: on
+// success they move on to that step.
+
+type Supabase = Awaited<ReturnType<typeof authorize>>["supabase"];
+
+/** Station settings belong to the owner; the database refuses anyone else. */
+async function saveSettings(supabase: Supabase, values: Record<string, unknown>) {
+  const { error } = await supabase.from("station_settings").update(values).eq("id", true);
+  check(error);
+}
 
 export async function updateStation(_prev: ActionState, form: FormData): Promise<ActionState> {
-  return runAction(async () => {
-    const { supabase } = await authorize(MANAGER_ROLES);
-    const currency = readText(form, "currency_code", "Currency").toUpperCase();
-    if (!/^[A-Z]{3}$/.test(currency)) throw new ActionError("Use a 3-letter currency code such as SLE or USD.");
-
-    const { error } = await supabase
-      .from("station_settings")
-      .update({
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      const currency = readText(form, "currency_code", "Currency").toUpperCase();
+      if (!/^[A-Z]{3}$/.test(currency)) throw new ActionError("Use a 3-letter currency code such as SLE or USD.");
+      await saveSettings(supabase, {
         station_name: readText(form, "station_name", "Station name"),
         currency_code: currency,
+      });
+      return "Station details saved.";
+    }),
+  );
+}
+
+export async function updateControls(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      const windowDays = readInteger(form, "attendant_date_window_days", "Dates attendants can use");
+      if (windowDays > 7) throw new ActionError("Attendants can be given at most a week either side of today.");
+      await saveSettings(supabase, {
         shortage_tolerance: readNumber(form, "shortage_tolerance", "Shortage tolerance"),
         dip_variance_tolerance_percent: readNumber(form, "dip_variance_tolerance_percent", "Dip tolerance"),
-      })
-      .eq("id", true);
-    check(error);
-    return "Station settings saved.";
-  });
+        attendant_date_window_days: windowDays,
+        attendants_open_shifts: readChoice(form, "shift_opener", ["attendants", "managers"] as const, "Who opens shifts") === "attendants",
+        attendants_record_closing_dips:
+          readChoice(form, "closing_dips_by", ["managers", "attendants"] as const, "Who records closing dips") === "attendants",
+      });
+      return "Controls saved.";
+    }),
+  );
 }
+
+export async function updateShifts(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      const names = readList(form, "shift_names");
+      if (names.length === 0) throw new ActionError("Enter at least one shift.");
+      await saveSettings(supabase, { shift_names: names });
+      return "Shifts saved. Shifts already opened keep their names.";
+    }),
+  );
+}
+
+export async function updatePayments(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      const digital = form.get("accepts_digital_payments") === "on";
+      await saveSettings(supabase, {
+        accepts_digital_payments: digital,
+        accepts_customer_credit: form.get("accepts_customer_credit") === "on",
+        ...(digital ? { digital_payments_label: readText(form, "digital_payments_label", "Name for these payments") } : {}),
+      });
+      return "Payments saved.";
+    }),
+  );
+}
+
+export async function updateBar(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      const enabled = form.get("bar_enabled") === "on";
+      // Switched off, the bar keeps its name and categories for when it comes back.
+      await saveSettings(
+        supabase,
+        enabled
+          ? {
+              bar_enabled: true,
+              bar_name: readText(form, "bar_name", "Name"),
+              bar_item_label: readText(form, "bar_item_label", "Word for one thing sold"),
+              bar_categories: readList(form, "bar_categories"),
+            }
+          : { bar_enabled: false },
+      );
+      return enabled ? "Saved." : "Saved. Only fuel is sold.";
+    }),
+  );
+}
+
+export async function updateAccess(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return continueTo(
+    form,
+    await runAction(async () => {
+      const { supabase } = await authorize(["owner"]);
+      await saveSettings(supabase, {
+        managers_view_finances: form.get("managers_view_finances") === "on",
+        managers_use_cash_book: form.get("managers_use_cash_book") === "on",
+      });
+      return "Access saved.";
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fuels and equipment (managers)
+// ---------------------------------------------------------------------------
 
 export async function updateFuelProduct(code: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
@@ -65,6 +167,15 @@ export async function addFuelProduct(_prev: ActionState, form: FormData): Promis
     if (error?.code === "23505") throw new ActionError(`A fuel with code ${code} already exists.`);
     check(error);
     return `${code} added.`;
+  });
+}
+
+export async function removeFuelProduct(code: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { error } = await supabase.rpc("remove_fuel_product", { p_code: code });
+    check(error);
+    return `${code} removed.`;
   });
 }
 
@@ -206,13 +317,122 @@ export async function removePump(pumpId: string): Promise<ActionState> {
   });
 }
 
-export async function updateStaffRole(profileId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+// ---------------------------------------------------------------------------
+// Staff (owner)
+// ---------------------------------------------------------------------------
+
+const MEMBER_ROLES = ["manager", "attendant"] as const;
+
+/** Creates a staff account the member can sign in to straight away. */
+export async function addMember(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(["owner"]);
-    const role = readChoice(form, "role", ["owner", "manager", "attendant", "pending"] as const, "Role");
-    const { data, error } = await supabase.from("profiles").update({ role }).eq("id", profileId).select("id");
+    const admin = createAdminClient();
+    if (!admin) {
+      throw new ActionError(
+        "Adding members needs the server's SUPABASE_SERVICE_ROLE_KEY setting. Until it is set, staff can sign up themselves and you give them a role below.",
+      );
+    }
+    const fullName = readText(form, "full_name", "Name");
+    const email = readText(form, "email", "Login email").toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new ActionError("Enter the login as an email address, e.g. alie@yourstation.sl.");
+    const password = readText(form, "password", "Password");
+    if (password.length < 8) throw new ActionError("Use a password of at least 8 characters.");
+    const role = readChoice(form, "role", MEMBER_ROLES, "Role");
+
+    // Confirmed on creation, so no email is sent and any address works as a login.
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: fullName },
+    });
+    if (error) {
+      throw new ActionError(
+        /already/i.test(error.message)
+          ? "An account with that email already exists. Find it in the list below and give it a role."
+          : error.message,
+      );
+    }
+
+    // New accounts start without access; the owner's own session gives the role.
+    const { error: roleError } = await supabase.from("profiles").update({ role, full_name: fullName }).eq("id", data.user.id);
+    if (roleError) {
+      throw new ActionError(`The account was created, but its role was not set. Give ${fullName} a role in the list below.`);
+    }
+    return `${fullName} can now sign in with ${email} and the password you set.`;
+  });
+}
+
+export async function updateMember(profileId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(["owner"]);
+    const role = readChoice(form, "role", ["owner", ...MEMBER_ROLES, "pending"] as const, "Role");
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ role, full_name: readText(form, "full_name", "Name") })
+      .eq("id", profileId)
+      .select("id");
     check(error);
     if (!data?.length) throw new ActionError("Staff member not found.");
-    return "Role updated.";
+    return role === "pending" ? "Saved. They can no longer see anything." : "Saved.";
+  });
+}
+
+/** Sets a new password for a member who has forgotten theirs. */
+export async function resetMemberPassword(profileId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(["owner"]);
+    const admin = createAdminClient();
+    if (!admin) throw new ActionError("Setting passwords needs the server's SUPABASE_SERVICE_ROLE_KEY setting.");
+    const password = readText(form, "password", "New password");
+    if (password.length < 8) throw new ActionError("Use a password of at least 8 characters.");
+
+    const { data: member, error } = await supabase.from("profiles").select("role, full_name").eq("id", profileId).maybeSingle();
+    check(error);
+    if (!member) throw new ActionError("Staff member not found.");
+    if (member.role === "owner") throw new ActionError("Owners change their own passwords.");
+
+    const { error: resetError } = await admin.auth.admin.updateUserById(profileId, { password });
+    if (resetError) throw new ActionError(resetError.message);
+    return `New password set for ${member.full_name || "this member"}.`;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Cash-book categories (owner)
+// ---------------------------------------------------------------------------
+
+export async function addCategory(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(["owner"]);
+    const { error } = await supabase.rpc("add_cash_category", {
+      p_name: readText(form, "name", "Name"),
+      p_type: readChoice(form, "transaction_type", ["EXPENSE", "INCOME"] as const, "Money in or out"),
+      p_description: readOptionalText(form, "description"),
+      p_account_code: readOptionalText(form, "account_code"),
+    });
+    check(error);
+    return "Category added.";
+  });
+}
+
+export async function updateCategory(name: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(["owner"]);
+    const newName = readText(form, "name", "Name").replace(/\s+/g, " ");
+    const { data, error } = await supabase
+      .from("transaction_categories")
+      .update({
+        name: newName,
+        description: readOptionalText(form, "description"),
+        is_active: form.get("is_active") === "on",
+      })
+      .eq("name", name)
+      .select("name");
+    if (error?.code === "23505") throw new ActionError(`There is already a category called "${newName}".`);
+    check(error);
+    if (!data?.length) throw new ActionError("Category not found.");
+    return "Category saved.";
   });
 }

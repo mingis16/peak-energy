@@ -8,17 +8,33 @@ import { Field } from "@/components/ui/field";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { buttonSecondary, inputClass } from "@/components/ui/styles";
 
-const FIELDS = [
-  { name: "cash_on_hand", label: "Cash on hand", hint: "Notes and coins counted at handover." },
-  { name: "credit_slips_amount", label: "Credit slips", hint: "Fuel given on account to credit customers." },
-  {
-    name: "digital_transfers_amount",
-    label: "Bank / mobile money",
-    hint: "Card, bank transfer and mobile money receipts.",
-  },
-] as const;
+type FieldName = "cash_on_hand" | "credit_slips_amount" | "digital_transfers_amount";
 
-type FieldName = (typeof FIELDS)[number]["name"];
+/** The payments a station takes, which decide the handover fields. */
+export interface HandoverPayments {
+  credit: boolean;
+  digital: boolean;
+  digitalLabel: string;
+}
+
+function fieldsFor(payments: HandoverPayments, initial: Record<FieldName, number>) {
+  // A payment switched off after it was declared stays visible, so it can be corrected.
+  return [
+    { name: "cash_on_hand" as const, label: "Cash on hand", hint: "Notes and coins counted at handover.", shown: true },
+    {
+      name: "credit_slips_amount" as const,
+      label: "Credit slips",
+      hint: "Fuel given on account to credit customers.",
+      shown: payments.credit || initial.credit_slips_amount !== 0,
+    },
+    {
+      name: "digital_transfers_amount" as const,
+      label: payments.digitalLabel,
+      hint: "Card, bank transfer and mobile money receipts.",
+      shown: payments.digital || initial.digital_transfers_amount !== 0,
+    },
+  ].filter((f) => f.shown);
+}
 
 export function HandoverForm({
   initial,
@@ -26,6 +42,7 @@ export function HandoverForm({
   expectedSales,
   currency,
   tolerance,
+  payments,
   mode,
   action,
 }: {
@@ -34,6 +51,7 @@ export function HandoverForm({
   expectedSales: number;
   currency: string;
   tolerance: number;
+  payments: HandoverPayments;
   /** "attendant" can save a draft or submit; "correction" lets a manager amend a submitted shift. */
   mode: "attendant" | "correction";
   action: (state: ActionState, formData: FormData) => Promise<ActionState>;
@@ -44,13 +62,14 @@ export function HandoverForm({
     digital_transfers_amount: initial.digital_transfers_amount ? String(initial.digital_transfers_amount) : "",
   });
 
-  const collected = FIELDS.reduce((sum, f) => sum + (Number(values[f.name].replace(/,/g, "")) || 0), 0);
+  const fields = fieldsFor(payments, initial);
+  const collected = fields.reduce((sum, f) => sum + (Number(values[f.name].replace(/,/g, "")) || 0), 0);
   const variance = Math.round((collected - expectedSales) * 100) / 100;
 
   return (
     <ActionForm action={action} resetOnSuccess={false} className="flex flex-col gap-4">
-      <div className="grid gap-4 sm:grid-cols-3">
-        {FIELDS.map((f) => (
+      <div className={`grid gap-4 ${fields.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+        {fields.map((f) => (
           <Field key={f.name} label={f.label} htmlFor={f.name} hint={f.hint}>
             <input
               id={f.name}

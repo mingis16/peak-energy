@@ -57,7 +57,7 @@ export function ShiftTable({
             <tr key={shift.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50">
               <td className={tdClass}>
                 <Link href={`/shifts/${shift.id}`} className="font-medium text-zinc-900 hover:underline dark:text-zinc-50">
-                  {shift.shift_label === "Day" ? "Full day" : shift.shift_label}
+                  {shift.shift_label}
                 </Link>
                 {showDate && (
                   <p className="text-xs text-zinc-500 dark:text-zinc-400">{formatDate(shift.shift_date)}</p>
