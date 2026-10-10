@@ -12,7 +12,7 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { buttonSecondary } from "@/components/ui/styles";
 import { getStationSettings, requireManager } from "@/lib/auth";
 import { rows } from "@/lib/data";
-import { signupUrl } from "@/lib/station";
+import { signupUrl } from "@/lib/app-url";
 import { canCreateAccounts } from "@/lib/supabase/admin";
 import type { Supabase } from "@/lib/supabase/server";
 import type { Account, Profile, StationSettings, TransactionCategory } from "@/lib/types";
@@ -46,7 +46,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
     <>
       <PageHeader
         title="Settings"
-        description={owner ? "Set the app up the way your station runs." : "Fuel prices, tanks and pumps."}
+        description={owner ? "Set the app up the way your station runs." : "Fuel prices, tanks, pumps and nozzles."}
         actions={
           owner && (
             <Link href="/setup" className={buttonSecondary}>
@@ -145,13 +145,13 @@ async function EquipmentTab({ supabase, settings, owner }: { supabase: Supabase;
       </Card>
       <Card
         title="Tanks"
-        description="Before a tank is used, set its fuel and the stock in it now (from a dip). After its first reading, dip or delivery, stock changes only through those."
+        description="Before a tank is used, set its fuel and the stock in it now (from a dip). After its first reading, dip or delivery, stock changes only through those. Removing a used tank retires it and keeps its history."
       >
         <TanksSection equipment={equipment} currency={currency} />
       </Card>
       <Card
-        title="Pumps"
-        description="One row per metered nozzle. Before a pump's first reading, enter its real meter. After that, each shift opens where the last one closed, and only the owner can correct a meter."
+        title="Pumps and nozzles"
+        description="Add each pump, then its nozzles: each nozzle has its own meter and draws from one tank. Before a nozzle's first reading, enter its real meter; after that, each shift opens where the last one closed, and only the owner can correct a meter."
       >
         <PumpsSection equipment={equipment} owner={owner} />
       </Card>
@@ -183,7 +183,7 @@ async function StaffTab({ supabase, settings, me }: { supabase: Supabase; settin
   return (
     <>
       <Card title="Add a member" description="Managers and attendants who work at the station.">
-        <AddMemberForm canCreate={canCreate} signupUrl={signupUrl()} />
+        <AddMemberForm canCreate={canCreate} signupUrl={await signupUrl()} />
       </Card>
       <Card title="Staff" description="Change a name or role. Choose “No access” for someone who has left.">
         <MemberList staff={staff} me={me} canCreate={canCreate} />

@@ -17,16 +17,20 @@ insert into public.tanks (tank_name, fuel_type, capacity_liters, current_volume,
     ('Tank 2', 'AGO', 33000, 9000, 8000),
     ('Tank 3', 'DPK', 15000, 6000, 4000);
 
-insert into public.pumps (pump_number, tank_id, current_meter)
-select p.pump_number, t.id, p.meter
+-- Three pumps; each nozzle draws from its own tank.
+insert into public.dispensers (name) values ('Pump 1'), ('Pump 2'), ('Pump 3');
+
+insert into public.pumps (pump_number, tank_id, dispenser_id, current_meter)
+select n.nozzle, t.id, d.id, n.meter
 from (values
-    ('P1', 'Tank 1', 125400),
-    ('P2', 'Tank 1', 98210),
-    ('P3', 'Tank 2', 75330),
-    ('P4', 'Tank 2', 64120),
-    ('P5', 'Tank 3', 20150)
-) as p (pump_number, tank_name, meter)
-join public.tanks t on t.tank_name = p.tank_name;
+    ('1A', 'Pump 1', 'Tank 1', 125400),
+    ('1B', 'Pump 1', 'Tank 2', 75330),
+    ('2A', 'Pump 2', 'Tank 1', 98210),
+    ('2B', 'Pump 2', 'Tank 2', 64120),
+    ('3A', 'Pump 3', 'Tank 3', 20150)
+) as n (nozzle, pump_name, tank_name, meter)
+join public.tanks t on t.tank_name = n.tank_name
+join public.dispensers d on d.name = n.pump_name;
 
 -- Drinks commonly sold in Sierra Leone clubs; prices in SLE.
 insert into public.bar_inventory (item_name, sku, category, quantity_in_stock, cost_price, selling_price, reorder_threshold) values

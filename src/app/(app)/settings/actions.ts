@@ -242,55 +242,107 @@ export async function updateTank(tankId: string, _prev: ActionState, form: FormD
   });
 }
 
+/** Deletes an unused tank; a used one is retired, keeping its readings, dips and deliveries. */
 export async function removeTank(tankId: string): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
-    const { error } = await supabase.rpc("remove_tank", { p_tank_id: tankId });
+    const { data, error } = await supabase.rpc("remove_tank", { p_tank_id: tankId });
     check(error);
-    return "Tank removed.";
+    return data === "RETIRED"
+      ? "Tank removed. Its readings, dips and deliveries stay in the records; restore it under Removed equipment."
+      : "Tank deleted.";
+  });
+}
+
+export async function restoreTank(tankId: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { error } = await supabase.rpc("restore_tank", { p_tank_id: tankId });
+    check(error);
+    return "Tank restored. Tick “In use” to use it again.";
+  });
+}
+
+/** Nozzle names are the station's own, e.g. "1A" or "Pump 2 diesel". */
+function readNozzleName(form: FormData): string {
+  return readText(form, "pump_number", "Nozzle name").replace(/\s+/g, " ");
+}
+
+export async function addDispenser(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const name = readText(form, "name", "Pump name").replace(/\s+/g, " ");
+    const { error } = await supabase.from("dispensers").insert({ name });
+    if (error?.code === "23505") throw new ActionError(`There is already a pump called "${name}".`);
+    check(error);
+    return `${name} added. Now add its nozzles.`;
+  });
+}
+
+export async function renameDispenser(dispenserId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const name = readText(form, "name", "Pump name").replace(/\s+/g, " ");
+    const { data, error } = await supabase.from("dispensers").update({ name }).eq("id", dispenserId).select("id");
+    if (error?.code === "23505") throw new ActionError(`There is already a pump called "${name}".`);
+    check(error);
+    if (!data?.length) throw new ActionError("Pump not found.");
+    return "Pump renamed.";
+  });
+}
+
+/** Removes a pump with its nozzles: unused nozzles are deleted, used ones retired with their history. */
+export async function removeDispenser(dispenserId: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { data, error } = await supabase.rpc("remove_dispenser", { p_dispenser_id: dispenserId });
+    check(error);
+    const retired = Number(data ?? 0);
+    return retired
+      ? `Pump removed. ${retired} nozzle${retired === 1 ? " had" : "s had"} readings, so ${retired === 1 ? "it was" : "they were"} retired with ${retired === 1 ? "its" : "their"} history.`
+      : "Pump removed.";
   });
 }
 
 export async function addPump(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
+    const name = readNozzleName(form);
     const { error } = await supabase.from("pumps").insert({
-      pump_number: readText(form, "pump_number", "Pump number").toUpperCase(),
+      pump_number: name,
       tank_id: readText(form, "tank_id", "Tank"),
+      dispenser_id: readOptionalText(form, "dispenser_id"),
       current_meter: readNumber(form, "current_meter", "Meter reading"),
     });
-    if (error?.code === "23505") throw new ActionError("A pump with that number already exists.");
+    if (error?.code === "23505") throw new ActionError(`There is already a nozzle called "${name}".`);
     check(error);
-    return "Pump added.";
+    return `Nozzle ${name} added.`;
   });
 }
 
 export async function updatePump(pumpId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
-    const is_active = form.get("is_active") === "on";
-    // Number, tank and meter are on the form only until the pump's first reading.
+    // Which pump a nozzle sits on can always change; it does not affect its readings.
+    const always = { is_active: form.get("is_active") === "on", dispenser_id: readOptionalText(form, "dispenser_id") };
+    // Name, tank and meter are on the form only until the nozzle's first reading.
     const setup = form.has("current_meter");
     const meter = setup ? readNumber(form, "current_meter", "Meter reading") : null;
 
     const { data, error } = await supabase
       .from("pumps")
-      .update(
-        setup
-          ? { pump_number: readText(form, "pump_number", "Pump number").toUpperCase(), tank_id: readText(form, "tank_id", "Tank"), is_active }
-          : { is_active },
-      )
+      .update(setup ? { ...always, pump_number: readNozzleName(form), tank_id: readText(form, "tank_id", "Tank") } : always)
       .eq("id", pumpId)
       .select("id");
-    if (error?.code === "23505") throw new ActionError("A pump with that number already exists.");
+    if (error?.code === "23505") throw new ActionError("There is already a nozzle with that name.");
     check(error);
-    if (!data?.length) throw new ActionError("Pump not found.");
+    if (!data?.length) throw new ActionError("Nozzle not found.");
 
     if (meter !== null) {
       const { error: meterError } = await supabase.rpc("set_pump_meter", { p_pump_id: pumpId, p_meter: meter });
       check(meterError);
     }
-    return "Pump updated.";
+    return "Nozzle saved.";
   });
 }
 
@@ -308,12 +360,24 @@ export async function correctMeter(pumpId: string, _prev: ActionState, form: For
   });
 }
 
+/** Deletes an unused nozzle; a used one is retired, keeping its readings. */
 export async function removePump(pumpId: string): Promise<ActionState> {
   return runAction(async () => {
     const { supabase } = await authorize(MANAGER_ROLES);
-    const { error } = await supabase.rpc("remove_pump", { p_pump_id: pumpId });
+    const { data, error } = await supabase.rpc("remove_pump", { p_pump_id: pumpId });
     check(error);
-    return "Pump removed.";
+    return data === "RETIRED"
+      ? "Nozzle removed. Its readings stay in the records; restore it under Removed equipment."
+      : "Nozzle deleted.";
+  });
+}
+
+export async function restorePump(pumpId: string): Promise<ActionState> {
+  return runAction(async () => {
+    const { supabase } = await authorize(MANAGER_ROLES);
+    const { error } = await supabase.rpc("restore_pump", { p_pump_id: pumpId });
+    check(error);
+    return "Nozzle restored. Tick “In use” to use it again.";
   });
 }
 
@@ -330,7 +394,7 @@ export async function addMember(_prev: ActionState, form: FormData): Promise<Act
     const admin = createAdminClient();
     if (!admin) {
       throw new ActionError(
-        "Adding members needs the server's SUPABASE_SERVICE_ROLE_KEY setting. Until it is set, staff can sign up themselves and you give them a role below.",
+        "Adding members needs SUPABASE_SERVICE_ROLE_KEY in the server's environment variables (on Vercel: Project → Settings → Environment Variables, then redeploy). Until then, staff can sign up themselves and you give them a role below.",
       );
     }
     const fullName = readText(form, "full_name", "Name");
@@ -347,20 +411,14 @@ export async function addMember(_prev: ActionState, form: FormData): Promise<Act
       email_confirm: true,
       user_metadata: { full_name: fullName },
     });
-    if (error) {
-      throw new ActionError(
-        /already/i.test(error.message)
-          ? "An account with that email already exists. Find it in the list below and give it a role."
-          : error.message,
-      );
-    }
+    if (error) throw new ActionError(describeAdminError(error));
 
     // New accounts start without access; the owner's own session gives the role.
     const { error: roleError } = await supabase.from("profiles").update({ role, full_name: fullName }).eq("id", data.user.id);
     if (roleError) {
       throw new ActionError(`The account was created, but its role was not set. Give ${fullName} a role in the list below.`);
     }
-    return `${fullName} can now sign in with ${email} and the password you set.`;
+    return `${fullName} can now sign in with ${email} and the password ${password}. Give them these details.`;
   });
 }
 
@@ -379,6 +437,17 @@ export async function updateMember(profileId: string, _prev: ActionState, form: 
   });
 }
 
+/** Supabase admin API errors, in words the owner can act on. */
+function describeAdminError(error: { message: string; status?: number }): string {
+  if (/already/i.test(error.message)) {
+    return "An account with that email already exists. Find it in the list below and give it a role.";
+  }
+  if (error.status === 401 || error.status === 403 || /invalid api key|not allowed|jwt/i.test(error.message)) {
+    return "Supabase refused the server's SUPABASE_SERVICE_ROLE_KEY. Check it is the service_role key of this project.";
+  }
+  return error.message;
+}
+
 /** Sets a new password for a member who has forgotten theirs. */
 export async function resetMemberPassword(profileId: string, _prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction(async () => {
@@ -394,8 +463,8 @@ export async function resetMemberPassword(profileId: string, _prev: ActionState,
     if (member.role === "owner") throw new ActionError("Owners change their own passwords.");
 
     const { error: resetError } = await admin.auth.admin.updateUserById(profileId, { password });
-    if (resetError) throw new ActionError(resetError.message);
-    return `New password set for ${member.full_name || "this member"}.`;
+    if (resetError) throw new ActionError(describeAdminError(resetError));
+    return `${member.full_name || "They"} can now sign in with the password ${password}.`;
   });
 }
 

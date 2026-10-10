@@ -24,7 +24,7 @@ The first account to sign up becomes the **owner**, and is taken through a few q
 1. **Your station**: name and currency.
 2. **Fuels and prices**: which fuels are sold, pump price and cost per litre.
 3. **Tanks**: each tank's fuel, capacity, today's dipped stock and reorder level.
-4. **Pumps**: each nozzle, its tank and its meter reading now.
+4. **Pumps and nozzles**: each pump, then its nozzles, with the tank each draws from and its meter reading now.
 5. **Shifts**: one a day, day and night, three shifts, or the station's own names.
 6. **Payments**: whether customers pay by bank/mobile money (and what the station calls it, e.g. "Orange Money") and whether they buy on credit. Handover forms show only these.
 7. **Besides fuel**: a bar, a shop, lubricants or nothing; its name, what one thing sold is called, and its categories. The menu, pages and ledger use these words.
@@ -51,11 +51,17 @@ Managers cannot see the cash book or the accounts until the owner allows it (Set
 
 ### Staff
 
-The owner adds members in Settings → Staff & access with a name, a login email, a password and a role, and the member can sign in straight away. No email is sent, so any address works as a login. The owner can also set a new password for a member who forgets theirs, or set someone who has left to **No access**. Adding members and setting passwords use Supabase's admin API, so they need `SUPABASE_SERVICE_ROLE_KEY` on the server (see Environment). Without it, staff sign up themselves, start with no access, and wait for the owner to give them a role.
+The owner adds members in Settings → Staff & access with a name, a login email, a temporary password (or a generated one) and a role, and the member can sign in straight away. No email is sent, so any address works as a login. The owner can also set a new password for a member who forgets theirs, or set someone who has left to **No access**. Adding members and setting passwords use Supabase's admin API, so they need `SUPABASE_SERVICE_ROLE_KEY` on the server (see Environment).
+
+Staff can also sign up themselves with the link shown under Staff & access; they start with no access until the owner gives them a role. The link uses the app's live address: `NEXT_PUBLIC_APP_URL` (or `NEXT_PUBLIC_SITE_URL`) if set, otherwise Vercel's production domain, otherwise the address the owner opened the page at. A `localhost` setting is never used on a live site.
 
 ### Equipment setup
 
-Until a tank has its first reading, dip or delivery, a manager can set its fuel and the stock in it (Settings → Fuel & equipment); the opening stock is revalued to match. Until a pump has its first reading, its number, tank and meter can be set. Unused tanks and pumps can be removed. After that, stock changes only through readings, dips and deliveries.
+The forecourt is tanks, pumps and nozzles, in any number (Settings → Fuel & equipment). Each pump has one or more nozzles; each nozzle has its own name, its own meter and draws from one tank. Owners and managers add, edit and remove all three.
+
+- Until a tank has its first reading, dip or delivery, its fuel and the stock in it can be set; the opening stock is revalued to match. After that, stock changes only through readings, dips and deliveries.
+- Until a nozzle has its first reading, its name, tank and meter can be set. Which pump it is on can always change.
+- **Removing** a tank or nozzle that was never used deletes it. One that has been used is **retired**: it leaves daily use and the settings lists, every shift, reading, dip and delivery that refers to it stays as it was, and it can be restored under *Removed*. Removing a pump does the same for each of its nozzles. A tank cannot be removed while nozzles still draw from it, and a nozzle cannot be removed while it has a reading in an open shift.
 
 ### Fraud controls
 
@@ -114,7 +120,7 @@ cp .env.example .env.local
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Project Settings → API → Project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API → `anon` key |
-| `NEXT_PUBLIC_SITE_URL` | The app's public URL (used in confirmation emails) |
+| `NEXT_PUBLIC_SITE_URL` | The app's public URL, e.g. `https://peak-energy-omega.vercel.app`, for the staff sign-up link and confirmation emails. `NEXT_PUBLIC_APP_URL` works too. Optional on Vercel, which supplies its production domain |
 | `NEXT_PUBLIC_STATION_TIMEZONE` | Defaults to `Africa/Freetown` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Optional. Project Settings → API → `service_role` key. Lets the owner add staff and set their passwords. Server only: never give it a `NEXT_PUBLIC_` prefix or share it |
 

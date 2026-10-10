@@ -62,14 +62,28 @@ export interface TankStatus {
   stock_value: number;
   avg_daily_sales_liters: number;
   days_of_cover: number | null;
+  /** Set when a used tank is removed: kept for its history, out of use. */
+  retired_at: string | null;
 }
 
+/** A pump (dispenser) on the forecourt; its nozzles are rows of `pumps`. */
+export interface Dispenser {
+  id: string;
+  name: string;
+  created_at: string;
+}
+
+/** A nozzle: one meter, drawing from one tank. The table is called `pumps` for history's sake. */
 export interface Pump {
   id: string;
+  /** The nozzle's name, e.g. "1A". */
   pump_number: string;
   tank_id: string;
+  dispenser_id: string | null;
   current_meter: number;
   is_active: boolean;
+  /** Set when a used nozzle is removed: kept for its history, out of use. */
+  retired_at: string | null;
 }
 
 export interface ShiftSummary {

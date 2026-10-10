@@ -73,7 +73,7 @@ export async function saveReadings(shiftId: string, _prev: ActionState, form: Fo
       const closingRaw = String(form.get(`closing_${pump.id}`) ?? "").trim();
       if (!closingRaw) continue;
 
-      const label = `Pump ${pump.pump_number}`;
+      const label = `Nozzle ${pump.pump_number}`;
       const current = byPump.get(pump.pump_number);
       const opening = Number(current?.opening_meter ?? pump.current_meter);
       const closing = readNumber(form, `closing_${pump.id}`, `${label} closing meter`);
@@ -104,7 +104,7 @@ export async function saveReadings(shiftId: string, _prev: ActionState, form: Fo
       saved++;
     }
 
-    if (saved === 0) throw new ActionError("Enter a closing meter for at least one pump.");
+    if (saved === 0) throw new ActionError("Enter a closing meter for at least one nozzle.");
     return `Saved ${saved} meter reading${saved === 1 ? "" : "s"}.`;
   });
 }

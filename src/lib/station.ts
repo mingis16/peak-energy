@@ -53,11 +53,6 @@ export function customerPaymentLabel(method: string, settings: PaymentSettings):
   return method === "BANK" ? settings.digital_payments_label : (PAYMENT_LABELS[method] ?? method);
 }
 
-/** Where staff create their own accounts. */
-export function signupUrl(): string {
-  return `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/signup`;
-}
-
 export const SHIFT_PATTERNS = [
   { label: "One shift a day", names: ["Full day"] },
   { label: "Day and night", names: ["Day", "Night"] },

@@ -186,7 +186,7 @@ check("unused pump: manager sets its real meter and number; logged as setup",
 await expectError("nobody edits a meter directly", () =>
   as(MANAGER, () => q(`update pumps set current_meter = 1 where id = $1`, [P9])), /permission denied/);
 await expectError("a tank with pumps cannot be removed", () =>
-  as(MANAGER, () => q(`select remove_tank($1)`, [T3])), /Pumps still draw/);
+  as(MANAGER, () => q(`select remove_tank($1)`, [T3])), /Nozzle P10 draws from tank "Tank 3"/);
 await as(MANAGER, () => q(`select remove_pump($1)`, [P9]));
 await as(MANAGER, () => q(`select remove_tank($1)`, [T3]));
 check("unused pump and tank removed, with the tank's opening entry",
@@ -582,6 +582,74 @@ await expectError("a category's account is fixed", () =>
 check("settings and category changes are in the audit log",
   (await one(`select count(*)::int c from audit_log where table_name = 'station_settings'`)).c > 0 &&
   (await one(`select count(*)::int c from audit_log where table_name = 'transaction_categories'`)).c > 0);
+
+console.log("\n== pumps and nozzles");
+const PUMP_A = (await as(MANAGER, () => one(`insert into dispensers (name) values ('Pump A') returning id`))).id;
+await expectError("pump names are unique, whatever the case", () =>
+  as(MANAGER, () => q(`insert into dispensers (name) values ('pump a')`)), /duplicate key/);
+await expectError("attendants cannot add pumps", () =>
+  as(ATTENDANT, () => q(`insert into dispensers (name) values ('Pump B')`)), /row-level security/);
+await as(MANAGER, () => q(`update pumps set dispenser_id = $1 where pump_number in ('P1', 'P2')`, [PUMP_A]));
+check("nozzles already in use can be moved onto a pump",
+  (await one(`select count(*)::int c from pumps where dispenser_id = $1`, [PUMP_A])).c === 2);
+await as(MANAGER, () => q(`insert into pumps (pump_number, tank_id, current_meter, dispenser_id) values ('Pump A left', $1, 500, $2)`, [T1, PUMP_A]));
+check("a nozzle can have any name and draws from the tank chosen for it",
+  (await one(`select tank_id from pumps where pump_number = 'Pump A left'`)).tank_id === T1);
+await expectError("nozzle names are unique, whatever the case", () =>
+  as(MANAGER, () => q(`insert into pumps (pump_number, tank_id) values ('p1', $1)`, [T1])), /duplicate key/);
+
+const openReading = await as(ATTENDANT, () => one(`insert into pump_readings (shift_id, pump_number, closing_meter) values ($1, 'P1', 2010) returning id`, [nightShift.id]));
+await expectError("a nozzle with a reading in an open shift cannot be removed", () =>
+  as(MANAGER, () => q(`select remove_pump(id) from pumps where pump_number = 'P1'`)), /still open/);
+await as(ATTENDANT, () => q(`delete from pump_readings where id = $1`, [openReading.id]));
+
+const p2Readings = (await one(`select count(*)::int c from pump_readings where pump_number = 'P2'`)).c;
+const retired = await as(MANAGER, () => one(`select remove_pump(id) r from pumps where pump_number = 'P2'`));
+const p2 = await one(`select is_active, retired_at from pumps where pump_number = 'P2'`);
+check("a used nozzle is retired, not deleted, and keeps its readings",
+  retired.r === "RETIRED" && p2.is_active === false && p2.retired_at !== null && p2Readings > 0 &&
+  (await one(`select count(*)::int c from pump_readings where pump_number = 'P2'`)).c === p2Readings, { retired, p2 });
+await expectError("a retired nozzle takes no readings", () =>
+  as(ATTENDANT, () => q(`insert into pump_readings (shift_id, pump_number, closing_meter) values ($1, 'P2', 6000)`, [nightShift.id])), /inactive/);
+await expectError("…and cannot be ticked back into use without restoring it", () =>
+  as(MANAGER, () => q(`update pumps set is_active = true where pump_number = 'P2'`)), /has been removed/);
+await as(MANAGER, () => q(`select restore_pump(id) from pumps where pump_number = 'P2'`));
+await as(MANAGER, () => q(`update pumps set is_active = true where pump_number = 'P2'`));
+check("a restored nozzle can be put back in use",
+  (await one(`select is_active, retired_at from pumps where pump_number = 'P2'`)).is_active === true);
+await expectError("attendants cannot remove nozzles", () =>
+  as(ATTENDANT, () => q(`select remove_pump(id) from pumps where pump_number = 'P2'`)), /Only a manager/);
+
+const retiredWithPump = (await as(MANAGER, () => one(`select remove_dispenser($1) n`, [PUMP_A]))).n;
+const afterPump = Object.fromEntries((await q(`select pump_number, retired_at is not null as retired, dispenser_id from pumps where pump_number in ('P1', 'P2', 'Pump A left')`))
+  .map((p) => [p.pump_number, p]));
+check("removing a pump retires its used nozzles and deletes the unused one",
+  retiredWithPump === 2 && afterPump.P1.retired && afterPump.P2.retired && !afterPump["Pump A left"] &&
+  afterPump.P1.dispenser_id === null && (await one(`select count(*)::int c from dispensers`)).c === 0, { retiredWithPump, afterPump });
+await as(MANAGER, () => q(`select restore_pump(id) from pumps where pump_number in ('P1', 'P2')`));
+await as(MANAGER, () => q(`update pumps set is_active = true where pump_number in ('P1', 'P2')`));
+
+await expectError("a tank cannot be removed while nozzles draw from it", () =>
+  as(MANAGER, () => q(`select remove_tank($1)`, [T2])), /Nozzle P3 draws from tank "Tank 2"/);
+await as(MANAGER, () => q(`select remove_pump(id) from pumps where pump_number = 'P3'`));
+const t2Retired = (await as(MANAGER, () => one(`select remove_tank($1) r`, [T2]))).r;
+check("a used tank is retired with its history; its stock stays in the books",
+  t2Retired === "RETIRED" && (await one(`select is_active, retired_at is not null as retired from tanks where id = $1`, [T2])).retired &&
+  (await one(`select count(*)::int c from pump_readings where tank_id = $1`, [T2])).c > 0);
+await expectError("a retired tank takes no deliveries", () =>
+  as(MANAGER, () => q(`insert into fuel_deliveries (tank_id, supplier, invoiced_liters, received_liters, unit_cost) values ($1, 'X', 100, 100, 26)`, [T2])), /inactive/);
+await expectError("no nozzle can draw from a retired tank", () =>
+  as(MANAGER, () => q(`select restore_pump(id) from pumps where pump_number = 'P3'`)), /Restore the tank first/);
+await as(MANAGER, () => q(`select restore_tank($1)`, [T2]));
+await as(MANAGER, () => q(`select restore_pump(id) from pumps where pump_number = 'P3'`));
+await as(MANAGER, () => q(`update tanks set is_active = true where id = $1`, [T2]));
+await as(MANAGER, () => q(`update pumps set is_active = true where pump_number = 'P3'`));
+check("a restored tank and nozzle are back in use",
+  (await one(`select is_active from tanks where id = $1`, [T2])).is_active === true &&
+  (await one(`select is_active from pumps where pump_number = 'P3'`)).is_active === true);
+check("pump and nozzle changes are in the audit log",
+  (await one(`select count(*)::int c from audit_log where table_name = 'dispensers'`)).c > 0 &&
+  (await one(`select count(*)::int c from audit_log where table_name = 'pumps' and new_data ? 'retired_at'`)).c > 0);
 
 const finalTb = await as(MANAGER, () => q(`select * from get_trial_balance('2026-12-31')`));
 const fdr = finalTb.reduce((a, r) => a + num(r.total_debit), 0), fcr = finalTb.reduce((a, r) => a + num(r.total_credit), 0);

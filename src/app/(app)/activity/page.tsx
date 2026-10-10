@@ -13,7 +13,8 @@ export const metadata: Metadata = { title: "Activity" };
 function recordLabels(bar: ReturnType<typeof barWords>): Record<string, string> {
   return {
     tanks: "tank",
-    pumps: "pump",
+    dispensers: "pump",
+    pumps: "nozzle",
     fuel_products: "fuel price",
     station_settings: "station settings",
     profiles: "staff member",
@@ -154,7 +155,7 @@ export default async function ActivityPage() {
 
         <Card
           title="Meter corrections"
-          description="Every manual change to a pump meter. Once a pump is in use, only the owner can make one, with a reason."
+          description="Every manual change to a nozzle's meter. Once a nozzle is in use, only the owner can make one, with a reason."
         >
           {corrections.length === 0 ? (
             <EmptyState>No meter changes yet.</EmptyState>
@@ -164,7 +165,7 @@ export default async function ActivityPage() {
                 <thead>
                   <tr>
                     <th className={thClass}>When</th>
-                    <th className={thClass}>Pump</th>
+                    <th className={thClass}>Nozzle</th>
                     <th className={`${thClass} ${numClass}`}>From</th>
                     <th className={`${thClass} ${numClass}`}>To</th>
                     <th className={thClass}>Reason</th>

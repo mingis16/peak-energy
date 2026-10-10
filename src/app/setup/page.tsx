@@ -13,7 +13,7 @@ import { ActionForm, SubmitButton } from "@/components/ui/action-form";
 import { buttonPrimary, buttonSecondary, buttonSmall } from "@/components/ui/styles";
 import { getStationSettings, requireOwner } from "@/lib/auth";
 import { rows } from "@/lib/data";
-import { signupUrl } from "@/lib/station";
+import { signupUrl } from "@/lib/app-url";
 import { canCreateAccounts } from "@/lib/supabase/admin";
 import type { Supabase } from "@/lib/supabase/server";
 import type { FuelProduct, Profile, StationSettings } from "@/lib/types";
@@ -26,7 +26,7 @@ const STEPS = [
   { id: "station", title: "Your station", intro: "A few questions set the app up the way your station works. You can change any answer later in Settings." },
   { id: "fuels", title: "Fuels and prices", intro: "Which fuels do you sell, and what do customers pay per litre?" },
   { id: "tanks", title: "Tanks", intro: "Add each tank. Enter what is in it today, from a dip: that becomes your opening stock." },
-  { id: "pumps", title: "Pumps", intro: "Add each nozzle, the tank it draws from and its meter (totaliser) reading now. Every shift starts where the last one closed." },
+  { id: "pumps", title: "Pumps and nozzles", intro: "Add each pump, then its nozzles: for each nozzle, the tank it draws from and its meter (totaliser) reading now. Every shift starts where the last one closed." },
   { id: "shifts", title: "Shifts", intro: "How do your attendants work? Each shift is counted and handed over on its own." },
   { id: "payments", title: "Payments", intro: "How do customers pay? Attendants declare each kind at handover, and the app checks the total against the pump meters." },
   { id: "sales", title: "Besides fuel", intro: "Do you sell anything else, such as drinks or lubricants? The app can keep its stock and sales as well." },
@@ -178,7 +178,7 @@ async function StepContent({
       const canCreate = canCreateAccounts();
       return (
         <div className="flex flex-col gap-5">
-          <AddMemberForm canCreate={canCreate} signupUrl={signupUrl()} />
+          <AddMemberForm canCreate={canCreate} signupUrl={await signupUrl()} />
           <div>
             <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Staff</h2>
             <MemberList staff={staff} me={me} canCreate={canCreate} />

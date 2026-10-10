@@ -2,6 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { appUrl } from "@/lib/app-url";
 import { createClient } from "@/lib/supabase/server";
 
 export async function login(formData: FormData) {
@@ -30,7 +31,8 @@ export async function signup(formData: FormData) {
     redirect(`/signup?error=${encodeURIComponent("Use a password of at least 8 characters.")}`);
   }
 
-  const origin = (await headers()).get("origin") ?? process.env.NEXT_PUBLIC_SITE_URL ?? "";
+  // The confirmation link brings people back to the address they signed up at.
+  const origin = (await headers()).get("origin") ?? (await appUrl());
   const { data, error } = await supabase.auth.signUp({
     email,
     password,

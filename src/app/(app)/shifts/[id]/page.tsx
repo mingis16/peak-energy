@@ -19,12 +19,14 @@ import type { FuelProduct, PumpReading, ShiftSummary } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Shift" };
 
+/** A nozzle, with the tank it draws from and the pump it sits on. */
 interface PumpWithTank {
   id: string;
   pump_number: string;
   current_meter: number;
   is_active: boolean;
   tanks: { tank_name: string; fuel_type: string } | null;
+  dispensers: { name: string } | null;
 }
 
 export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
@@ -45,7 +47,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
     supabase.from("pump_readings").select("*").eq("shift_id", id),
     supabase
       .from("pumps")
-      .select("id, pump_number, current_meter, is_active, tanks(tank_name, fuel_type)")
+      .select("id, pump_number, current_meter, is_active, tanks(tank_name, fuel_type), dispensers(name)")
       .order("pump_number"),
     supabase.from("fuel_products").select("*"),
   ]);
@@ -53,7 +55,11 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
   const shift = row<ShiftSummary>(shiftResult, "shift");
   if (!shift) notFound();
   const readings = rows<PumpReading>(readingsResult, "meter readings");
-  const pumps = rows<PumpWithTank>(pumpsResult, "pumps");
+  // Grouped by pump, in the order the forecourt reads: "Pump 2" before "Pump 10".
+  const natural = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+  const pumps = rows<PumpWithTank>(pumpsResult, "nozzles").sort(
+    (a, b) => natural(a.dispensers?.name ?? "￿", b.dispensers?.name ?? "￿") || natural(a.pump_number, b.pump_number),
+  );
   const prices = new Map(rows<FuelProduct>(productsResult, "fuel prices").map((p) => [p.code, p.price_per_liter]));
 
   const ownShift = shift.attendant_id === profile.id;
@@ -68,6 +74,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
       return {
         pumpId: pump.id,
         pumpNumber: pump.pump_number,
+        dispenserName: pump.dispensers?.name ?? null,
         tankName: pump.tanks?.tank_name ?? "",
         fuelType,
         price: Number(reading?.price_per_liter ?? prices.get(fuelType) ?? 0),
@@ -125,7 +132,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
           title="Pump meter readings"
           description={
             editable
-              ? "Enter each pump's closing totaliser. Opening meters carry over from the last shift."
+              ? "Enter each nozzle's closing totaliser. Opening meters carry over from the last shift."
               : "Readings are locked once the shift is handed over."
           }
         >
@@ -136,7 +143,7 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
           )}
           {readingRows.length === 0 ? (
             <EmptyState>
-              {editable ? "No active pumps. A manager can add pumps in Settings." : "No meter readings were recorded."}
+              {editable ? "No nozzles in use. A manager can add pumps and nozzles in Settings." : "No meter readings were recorded."}
             </EmptyState>
           ) : (
             <ReadingsForm
@@ -148,12 +155,12 @@ export default async function ShiftPage({ params }: PageProps<"/shifts/[id]">) {
           )}
           {editable && readings.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-4 text-xs text-zinc-500 dark:border-zinc-900 dark:text-zinc-400">
-              <span>Remove a saved reading:</span>
+              <span>Remove a saved reading, by nozzle:</span>
               {readings.map((r) => (
                 <ActionForm key={r.id} action={deleteReading.bind(null, r.id)} showSuccess={false}>
                   <SubmitButton
                     className={`${buttonDanger} ${buttonSmall}`}
-                    confirm={`Remove the reading for pump ${r.pump_number}? Its litres go back into the tank.`}
+                    confirm={`Remove the reading for nozzle ${r.pump_number}? Its litres go back into the tank.`}
                   >
                     {r.pump_number}
                   </SubmitButton>

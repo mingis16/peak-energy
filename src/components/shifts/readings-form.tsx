@@ -10,7 +10,10 @@ import { inputClass, numClass, tableClass, tdClass, thClass } from "@/components
 
 export interface ReadingRow {
   pumpId: string;
+  /** The nozzle's name. */
   pumpNumber: string;
+  /** The pump the nozzle is on, if one was recorded. */
+  dispenserName: string | null;
   tankName: string;
   fuelType: string;
   price: number;
@@ -61,7 +64,7 @@ export function ReadingsForm({
       <table className={tableClass}>
         <thead>
           <tr>
-            <th className={thClass}>Pump</th>
+            <th className={thClass}>Nozzle</th>
             <th className={`${thClass} ${numClass}`}>Price / L</th>
             <th className={`${thClass} ${numClass}`}>Opening</th>
             <th className={`${thClass} ${numClass}`}>Closing</th>
@@ -75,6 +78,7 @@ export function ReadingsForm({
               <td className={tdClass}>
                 <p className="font-medium text-zinc-900 dark:text-zinc-50">{row.pumpNumber}</p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {row.dispenserName && <>{row.dispenserName} · </>}
                   {row.fuelType} · {row.tankName}
                 </p>
               </td>
@@ -141,7 +145,7 @@ export function ReadingsForm({
       <div className="flex flex-wrap items-center gap-3">
         <SubmitButton>Save readings</SubmitButton>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Each opening meter is where that pump&apos;s last reading closed. Pumps without a closing meter are skipped.
+          Each opening meter is where that nozzle&apos;s last reading closed. Nozzles without a closing meter are skipped.
         </p>
       </div>
     </ActionForm>

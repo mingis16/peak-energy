@@ -1,11 +1,16 @@
 import {
+  addDispenser,
   addFuelProduct,
   addPump,
   addTank,
   correctMeter,
+  removeDispenser,
   removeFuelProduct,
   removePump,
   removeTank,
+  renameDispenser,
+  restorePump,
+  restoreTank,
   updateFuelProduct,
   updatePump,
   updateTank,
@@ -15,34 +20,43 @@ import { EmptyState } from "@/components/ui/card";
 import { DeleteButton } from "@/components/ui/delete-button";
 import { Field } from "@/components/ui/field";
 import { buttonSecondary, buttonSmall, inputClass } from "@/components/ui/styles";
+import type { ActionState } from "@/lib/actions";
 import { rows } from "@/lib/data";
-import { formatDateTime, formatLiters, formatMoney, formatNumber } from "@/lib/format";
+import { formatDate, formatDateTime, formatLiters, formatMoney, formatNumber } from "@/lib/format";
 import type { Supabase } from "@/lib/supabase/server";
-import type { FuelProduct, Pump, TankStatus } from "@/lib/types";
+import type { Dispenser, FuelProduct, Pump, TankStatus } from "@/lib/types";
 
 const rowForm = "grid items-end gap-3 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800";
 
+/** "Pump 2" before "Pump 10". */
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+
 export interface Equipment {
   products: FuelProduct[];
+  /** Every tank, retired ones included: their history still refers to them. */
   tanks: TankStatus[];
+  dispensers: Dispenser[];
+  /** Every nozzle, retired ones included. */
   pumps: Pump[];
-  /** Unused tanks and pumps, whose stock, fuel and meters can still be corrected. */
+  /** Unused tanks and nozzles, whose stock, fuel, name and meter can still be corrected. */
   inSetup: Set<string>;
   priceHistory: { id: string; fuel_type: string; old_price: number | null; new_price: number; changed_at: string }[];
 }
 
 export async function loadEquipment(supabase: Supabase): Promise<Equipment> {
-  const [productsResult, tanksResult, pumpsResult, setupResult, historyResult] = await Promise.all([
+  const [productsResult, tanksResult, dispensersResult, pumpsResult, setupResult, historyResult] = await Promise.all([
     supabase.from("fuel_products").select("*").order("code"),
     supabase.from("v_tank_status").select("*").order("tank_name"),
-    supabase.from("pumps").select("*").order("pump_number"),
+    supabase.from("dispensers").select("*"),
+    supabase.from("pumps").select("*"),
     supabase.from("v_equipment_setup").select("id, in_setup"),
     supabase.from("fuel_price_history").select("*").order("changed_at", { ascending: false }).limit(10),
   ]);
   return {
     products: rows<FuelProduct>(productsResult, "fuel products"),
-    tanks: rows<TankStatus>(tanksResult, "tanks"),
-    pumps: rows<Pump>(pumpsResult, "pumps"),
+    tanks: rows<TankStatus>(tanksResult, "tanks").sort((a, b) => byName(a.tank_name, b.tank_name)),
+    dispensers: rows<Dispenser>(dispensersResult, "pumps").sort((a, b) => byName(a.name, b.name)),
+    pumps: rows<Pump>(pumpsResult, "nozzles").sort((a, b) => byName(a.pump_number, b.pump_number)),
     inSetup: new Set(
       rows<{ id: string; in_setup: boolean }>(setupResult, "equipment").filter((e) => e.in_setup).map((e) => e.id),
     ),
@@ -129,7 +143,9 @@ export function FuelPricesSection({ equipment, currency }: { equipment: Equipmen
 }
 
 export function TanksSection({ equipment, currency }: { equipment: Equipment; currency: string }) {
-  const { products, tanks, inSetup } = equipment;
+  const { products, inSetup } = equipment;
+  const tanks = equipment.tanks.filter((t) => !t.retired_at);
+  const retired = equipment.tanks.filter((t) => t.retired_at);
 
   return (
     <>
@@ -184,13 +200,17 @@ export function TanksSection({ equipment, currency }: { equipment: Equipment; cu
                     ? `Not used yet, so fuel and stock can still be corrected · valued at ${formatMoney(t.stock_value, currency)}`
                     : `Book stock ${formatLiters(t.current_volume, 0)} · valued at ${formatMoney(t.stock_value, currency)} · changes only through readings, dips and deliveries`}
                 </p>
-                {setup && (
-                  <DeleteButton
-                    action={removeTank.bind(null, t.id)}
-                    label="Remove"
-                    confirm={`Remove ${t.tank_name}? Its opening stock comes out of the books.`}
-                  />
-                )}
+                <DeleteButton
+                  action={removeTank.bind(null, t.id)}
+                  label="Remove"
+                  confirm={
+                    setup
+                      ? `Delete ${t.tank_name}? Its opening stock comes out of the books.`
+                      : `Remove ${t.tank_name}? It has readings, dips or deliveries, so it is retired rather than deleted: its history stays in the records and it leaves daily use. ` +
+                        `It still holds ${formatLiters(t.current_volume, 0)} in the books; if it is empty, record a closing dip of 0 first. ` +
+                        `Nozzles drawing from it must be moved or removed first.`
+                  }
+                />
               </div>
             </div>
           );
@@ -228,112 +248,331 @@ export function TanksSection({ equipment, currency }: { equipment: Equipment; cu
           </ActionForm>
         )}
       </details>
+
+      {retired.length > 0 && (
+        <RemovedList
+          title={`Removed tanks (${retired.length})`}
+          items={retired.map((t) => ({
+            id: t.id,
+            name: `${t.tank_name} (${t.fuel_type})`,
+            detail: `removed ${formatDate(t.retired_at)} · ${formatLiters(t.current_volume, 0)} in the books`,
+            restore: restoreTank.bind(null, t.id),
+          }))}
+        />
+      )}
     </>
   );
 }
 
+/**
+ * Pumps and the nozzles on them. Each nozzle has its own meter and draws from
+ * one tank; nozzles from before pumps were recorded are listed on their own.
+ */
 export function PumpsSection({ equipment, owner }: { equipment: Equipment; owner: boolean }) {
-  const { tanks, pumps, inSetup } = equipment;
+  const { dispensers, inSetup } = equipment;
+  const tanks = equipment.tanks.filter((t) => !t.retired_at);
+  const nozzles = equipment.pumps.filter((p) => !p.retired_at);
+  const retired = equipment.pumps.filter((p) => p.retired_at);
+  const pumpIds = new Set(dispensers.map((d) => d.id));
+  const unassigned = nozzles.filter((p) => !p.dispenser_id || !pumpIds.has(p.dispenser_id));
+  const tankLabel = new Map(equipment.tanks.map((t) => [t.id, `${t.tank_name} (${t.fuel_type})`]));
+
+  if (tanks.length === 0 && nozzles.length === 0) {
+    return <p className="text-sm text-zinc-500 dark:text-zinc-400">Add a tank first: every nozzle draws from one.</p>;
+  }
+
+  const row = (pump: Pump) => (
+    <NozzleRow
+      key={pump.id}
+      pump={pump}
+      setup={inSetup.has(pump.id)}
+      tanks={tanks}
+      dispensers={dispensers}
+      tankLabel={tankLabel.get(pump.tank_id) ?? "—"}
+      owner={owner}
+    />
+  );
 
   return (
     <>
-      <div className="flex flex-col gap-3">
-        {pumps.length === 0 && <EmptyState>No pumps yet.</EmptyState>}
-        {pumps.map((p) => {
-          const setup = inSetup.has(p.id);
-          const tank = tanks.find((t) => t.id === p.tank_id);
+      <div className="flex flex-col gap-4">
+        {dispensers.length === 0 && unassigned.length === 0 && (
+          <EmptyState>No pumps yet. Add your first pump below, then its nozzles.</EmptyState>
+        )}
+        {dispensers.map((d, index) => {
+          const own = nozzles.filter((p) => p.dispenser_id === d.id);
           return (
-            <div key={p.id} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-              <ActionForm
-                action={updatePump.bind(null, p.id)}
-                resetOnSuccess={false}
-                className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[8rem_1fr_10rem_7rem_auto]"
-              >
-                {setup ? (
-                  <>
-                    <Field label="Pump" htmlFor={`pump-${p.id}`}>
-                      <input id={`pump-${p.id}`} name="pump_number" defaultValue={p.pump_number} className={inputClass} />
-                    </Field>
-                    <Field label="Draws from" htmlFor={`pump-tank-${p.id}`}>
-                      <select id={`pump-tank-${p.id}`} name="tank_id" defaultValue={p.tank_id} className={inputClass}>
-                        {tanks.map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.tank_name} ({t.fuel_type})
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
-                    <Field label="Meter" htmlFor={`meter-${p.id}`}>
-                      <input id={`meter-${p.id}`} name="current_meter" inputMode="decimal" defaultValue={p.current_meter} className={inputClass} />
-                    </Field>
-                  </>
-                ) : (
-                  <>
-                    <ReadOnlyField label="Pump" value={p.pump_number} />
-                    <ReadOnlyField label="Draws from" value={tank ? `${tank.tank_name} (${tank.fuel_type})` : "—"} />
-                    <ReadOnlyField label="Meter" value={formatNumber(p.current_meter, 2)} />
-                  </>
-                )}
-                <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
-                  <input type="checkbox" name="is_active" defaultChecked={p.is_active} /> In use
-                </label>
-                <SubmitButton className={buttonSecondary}>Save</SubmitButton>
-              </ActionForm>
-              <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {setup
-                    ? "No readings yet, so the number, tank and meter can still be corrected."
-                    : "The next shift opens at this meter."}
-                </p>
-                {setup && (
-                  <DeleteButton action={removePump.bind(null, p.id)} label="Remove" confirm={`Remove pump ${p.pump_number}?`} />
-                )}
-                {!setup && owner && (
-                  <details className="w-full sm:w-auto">
-                    <summary className={`${buttonSecondary} ${buttonSmall} cursor-pointer list-none`}>Correct meter</summary>
-                    <ActionForm action={correctMeter.bind(null, p.id)} className="mt-2 grid gap-2 sm:grid-cols-[9rem_14rem_auto] sm:items-end">
-                      <Field label="New meter" htmlFor={`correct-${p.id}`}>
-                        <input id={`correct-${p.id}`} name="new_meter" inputMode="decimal" required className={inputClass} />
-                      </Field>
-                      <Field label="Reason" htmlFor={`reason-${p.id}`}>
-                        <input id={`reason-${p.id}`} name="reason" required placeholder="e.g. meter replaced" className={inputClass} />
-                      </Field>
-                      <SubmitButton className={buttonSecondary}>Correct</SubmitButton>
-                    </ActionForm>
-                  </details>
-                )}
+            <section key={d.id} className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <ActionForm
+                  action={renameDispenser.bind(null, d.id)}
+                  resetOnSuccess={false}
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  <label htmlFor={`pump-name-${d.id}`} className="sr-only">
+                    Pump name
+                  </label>
+                  <input
+                    id={`pump-name-${d.id}`}
+                    name="name"
+                    defaultValue={d.name}
+                    required
+                    maxLength={30}
+                    className={`${inputClass} w-44 font-semibold`}
+                  />
+                  <SubmitButton className={`${buttonSecondary} ${buttonSmall}`}>Rename</SubmitButton>
+                </ActionForm>
+                <DeleteButton
+                  action={removeDispenser.bind(null, d.id)}
+                  label="Remove pump"
+                  confirm={
+                    own.length
+                      ? `Remove ${d.name} and its ${own.length} nozzle${own.length === 1 ? "" : "s"}? Nozzles never used are deleted; nozzles with readings are retired, and their readings stay in the records.`
+                      : `Remove ${d.name}?`
+                  }
+                />
               </div>
-            </div>
+              <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                {own.length === 0 ? "No nozzles yet." : `${own.length} nozzle${own.length === 1 ? "" : "s"}`}
+              </p>
+              {own.length > 0 && <div className="mt-3 flex flex-col gap-2">{own.map(row)}</div>}
+              {tanks.length > 0 && (
+                <AddNozzleForm
+                  dispenserId={d.id}
+                  tanks={tanks}
+                  suggested={`${index + 1}${String.fromCharCode(65 + own.length)}`}
+                  open={own.length === 0}
+                />
+              )}
+            </section>
           );
         })}
+
+        {unassigned.length > 0 && (
+          <section className="rounded-lg border border-dashed border-zinc-300 p-3 dark:border-zinc-700">
+            <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Nozzles not on a pump</h3>
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              {dispensers.length
+                ? "Choose the pump each one is on, then save."
+                : "Add your pumps below, then choose the pump each nozzle is on."}
+            </p>
+            <div className="mt-3 flex flex-col gap-2">{unassigned.map(row)}</div>
+          </section>
+        )}
       </div>
 
-      {tanks.length === 0 ? (
-        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Add a tank first: every pump draws from one.</p>
-      ) : (
-        <details className="mt-4" open={pumps.length === 0}>
-          <summary className="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-300">Add a pump</summary>
-          <ActionForm action={addPump} className={`${rowForm} mt-3 sm:grid-cols-2 lg:grid-cols-[8rem_1fr_10rem_auto]`}>
-            <Field label="Pump" htmlFor="pump_number">
-              <input id="pump_number" name="pump_number" required placeholder={`P${pumps.length + 1}`} className={inputClass} />
+      <details className="mt-4" open={dispensers.length === 0}>
+        <summary className="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-300">Add a pump</summary>
+        <ActionForm action={addDispenser} className={`${rowForm} mt-3 sm:grid-cols-[1fr_auto]`}>
+          <Field label="Pump name" htmlFor="new_pump_name" hint="e.g. Pump 1 or Island A. Add its nozzles after.">
+            <input
+              id="new_pump_name"
+              name="name"
+              required
+              maxLength={30}
+              placeholder={`Pump ${dispensers.length + 1}`}
+              className={inputClass}
+            />
+          </Field>
+          <SubmitButton className={buttonSecondary}>Add pump</SubmitButton>
+        </ActionForm>
+      </details>
+
+      {retired.length > 0 && (
+        <RemovedList
+          title={`Removed nozzles (${retired.length})`}
+          items={retired.map((p) => ({
+            id: p.id,
+            name: p.pump_number,
+            detail: `${tankLabel.get(p.tank_id) ?? "—"} · removed ${formatDate(p.retired_at)} · meter ${formatNumber(p.current_meter, 2)}`,
+            restore: restorePump.bind(null, p.id),
+          }))}
+        />
+      )}
+    </>
+  );
+}
+
+function NozzleRow({
+  pump,
+  setup,
+  tanks,
+  dispensers,
+  tankLabel,
+  owner,
+}: {
+  pump: Pump;
+  /** No readings yet, so name, tank and meter can still change. */
+  setup: boolean;
+  tanks: TankStatus[];
+  dispensers: Dispenser[];
+  tankLabel: string;
+  owner: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-zinc-100 p-3 dark:border-zinc-900">
+      <ActionForm
+        action={updatePump.bind(null, pump.id)}
+        resetOnSuccess={false}
+        className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-[9rem_1fr_9rem_9rem_6rem_auto]"
+      >
+        {setup ? (
+          <>
+            <Field label="Nozzle" htmlFor={`nozzle-${pump.id}`}>
+              <input id={`nozzle-${pump.id}`} name="pump_number" defaultValue={pump.pump_number} maxLength={30} className={inputClass} />
             </Field>
-            <Field label="Draws from" htmlFor="pump_tank">
-              <select id="pump_tank" name="tank_id" className={inputClass}>
-                {tanks.filter((t) => t.is_active).map((t) => (
+            <Field label="Draws from" htmlFor={`nozzle-tank-${pump.id}`}>
+              <select id={`nozzle-tank-${pump.id}`} name="tank_id" defaultValue={pump.tank_id} className={inputClass}>
+                {tanks.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.tank_name} ({t.fuel_type})
                   </option>
                 ))}
               </select>
             </Field>
-            <Field label="Current meter" htmlFor="current_meter" hint="The totaliser reading now.">
-              <input id="current_meter" name="current_meter" inputMode="decimal" defaultValue={0} className={inputClass} />
+            <Field label="Meter" htmlFor={`meter-${pump.id}`}>
+              <input id={`meter-${pump.id}`} name="current_meter" inputMode="decimal" defaultValue={pump.current_meter} className={inputClass} />
             </Field>
-            <SubmitButton className={buttonSecondary}>Add pump</SubmitButton>
-          </ActionForm>
-        </details>
-      )}
-    </>
+          </>
+        ) : (
+          <>
+            <ReadOnlyField label="Nozzle" value={pump.pump_number} />
+            <ReadOnlyField label="Draws from" value={tankLabel} />
+            <ReadOnlyField label="Meter" value={formatNumber(pump.current_meter, 2)} />
+          </>
+        )}
+        <Field label="On pump" htmlFor={`nozzle-pump-${pump.id}`}>
+          <select id={`nozzle-pump-${pump.id}`} name="dispenser_id" defaultValue={pump.dispenser_id ?? ""} className={inputClass}>
+            <option value="">Not on a pump</option>
+            {dispensers.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <label className="flex items-center gap-2 py-2 text-sm text-zinc-700 dark:text-zinc-300">
+          <input type="checkbox" name="is_active" defaultChecked={pump.is_active} /> In use
+        </label>
+        <SubmitButton className={buttonSecondary}>Save</SubmitButton>
+      </ActionForm>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-2">
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          {setup
+            ? "No readings yet, so the name, tank and meter can still be corrected."
+            : "Has readings, so its name and tank are fixed. The next shift opens at this meter."}
+        </p>
+        <div className="flex flex-wrap items-start justify-end gap-2">
+          {!setup && owner && (
+            <details>
+              <summary className={`${buttonSecondary} ${buttonSmall} cursor-pointer list-none`}>Correct meter</summary>
+              <ActionForm action={correctMeter.bind(null, pump.id)} className="mt-2 grid gap-2 sm:grid-cols-[9rem_14rem_auto] sm:items-end">
+                <Field label="New meter" htmlFor={`correct-${pump.id}`}>
+                  <input id={`correct-${pump.id}`} name="new_meter" inputMode="decimal" required className={inputClass} />
+                </Field>
+                <Field label="Reason" htmlFor={`reason-${pump.id}`}>
+                  <input id={`reason-${pump.id}`} name="reason" required placeholder="e.g. meter replaced" className={inputClass} />
+                </Field>
+                <SubmitButton className={buttonSecondary}>Correct</SubmitButton>
+              </ActionForm>
+            </details>
+          )}
+          <DeleteButton
+            action={removePump.bind(null, pump.id)}
+            label="Remove"
+            confirm={
+              setup
+                ? `Delete nozzle ${pump.pump_number}?`
+                : `Remove nozzle ${pump.pump_number}? It has meter readings, so it is retired rather than deleted: its readings stay in the records and it no longer appears for new shifts. You can restore it later.`
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddNozzleForm({
+  dispenserId,
+  tanks,
+  suggested,
+  open,
+}: {
+  dispenserId: string;
+  tanks: TankStatus[];
+  suggested: string;
+  open: boolean;
+}) {
+  const active = tanks.filter((t) => t.is_active);
+  return (
+    <details className="mt-3" open={open}>
+      <summary className="cursor-pointer text-sm font-medium text-zinc-700 dark:text-zinc-300">Add a nozzle</summary>
+      <ActionForm
+        action={addPump}
+        className="mt-2 grid items-end gap-3 rounded-md border border-zinc-100 p-3 dark:border-zinc-900 sm:grid-cols-2 lg:grid-cols-[9rem_1fr_10rem_auto]"
+      >
+        <input type="hidden" name="dispenser_id" value={dispenserId} />
+        <Field label="Nozzle name" htmlFor={`new-nozzle-${dispenserId}`} hint={`Any name, e.g. ${suggested}.`}>
+          <input
+            id={`new-nozzle-${dispenserId}`}
+            name="pump_number"
+            required
+            maxLength={30}
+            placeholder={suggested}
+            className={inputClass}
+          />
+        </Field>
+        <Field label="Draws from" htmlFor={`new-nozzle-tank-${dispenserId}`}>
+          <select id={`new-nozzle-tank-${dispenserId}`} name="tank_id" className={inputClass}>
+            {active.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.tank_name} ({t.fuel_type})
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Meter now" htmlFor={`new-nozzle-meter-${dispenserId}`} hint="The totaliser reading.">
+          <input
+            id={`new-nozzle-meter-${dispenserId}`}
+            name="current_meter"
+            inputMode="decimal"
+            defaultValue={0}
+            className={inputClass}
+          />
+        </Field>
+        <SubmitButton className={buttonSecondary}>Add nozzle</SubmitButton>
+      </ActionForm>
+    </details>
+  );
+}
+
+/** Retired equipment: out of use, kept for its history, and restorable. */
+function RemovedList({
+  title,
+  items,
+}: {
+  title: string;
+  items: { id: string; name: string; detail: string; restore: (state: ActionState, form: FormData) => Promise<ActionState> }[];
+}) {
+  return (
+    <details className="mt-4 text-sm">
+      <summary className="cursor-pointer text-xs text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50">
+        {title}
+      </summary>
+      <ul className="mt-2 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-900">
+        {items.map((item) => (
+          <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+            <span className="min-w-0">
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{item.name}</span>
+              <span className="block text-xs text-zinc-500 dark:text-zinc-400">{item.detail}</span>
+            </span>
+            <ActionForm action={item.restore} showSuccess={false} className="flex flex-col items-end gap-1">
+              <SubmitButton className={`${buttonSecondary} ${buttonSmall}`}>Restore</SubmitButton>
+            </ActionForm>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 
